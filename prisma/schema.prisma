@@ -1,0 +1,192 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserStatus {
+  PENDING
+  ACTIVE
+  INACTIVE
+}
+
+enum InvitationStatus {
+  PENDING
+  ACCEPTED
+  EXPIRED
+  REVOKED
+}
+
+enum TenantStatus {
+  ACTIVE
+  SUSPENDED
+}
+
+enum EmploymentStatus {
+  ACTIVE
+  ON_PROBATION
+  INACTIVE
+}
+
+enum LeaveStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum PayrollStatus {
+  DRAFT
+  PROCESSED
+}
+
+enum PayslipStatus {
+  GENERATED
+  SENT
+}
+
+model User {
+  id           String      @id @default(cuid())
+  email        String      @unique
+  passwordHash String
+  firstName    String
+  lastName     String
+  status       UserStatus  @default(ACTIVE)
+  tenantId     String?
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+  tenant       Tenant?     @relation(fields: [tenantId], references: [id], onDelete: SetNull)
+  roles        UserRole[]
+  employee     Employee?
+  invitations  Invitation[]
+}
+
+model Role {
+  id    String     @id @default(cuid())
+  name  String     @unique
+  users UserRole[]
+}
+
+model UserRole {
+  id     String @id @default(cuid())
+  userId String
+  roleId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role   Role   @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, roleId])
+}
+
+model Tenant {
+  id          String         @id @default(cuid())
+  name        String
+  plan        String
+  status      TenantStatus   @default(ACTIVE)
+  seats       Int            @default(5)
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+  users       User[]
+  employees   Employee[]
+  payrollRuns PayrollRun[]
+  candidates  Candidate[]
+  invitations Invitation[]
+}
+
+model Invitation {
+  id         String           @id @default(cuid())
+  tenantId   String
+  userId     String
+  email      String
+  role       String
+  status     InvitationStatus @default(PENDING)
+  tokenHash  String           @unique
+  invitedAt  DateTime         @default(now())
+  expiresAt  DateTime
+  acceptedAt DateTime?
+  tenant     Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user       User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([email])
+  @@index([tenantId, status])
+}
+
+model Employee {
+  id               String           @id @default(cuid())
+  tenantId         String
+  userId           String           @unique
+  employeeCode     String           @unique
+  department       String
+  designation      String
+  joinedDate       DateTime
+  employmentStatus EmploymentStatus @default(ACTIVE)
+  tenant           Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user             User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  leaveRequests    LeaveRequest[]
+  attendance       Attendance[]
+  payslips         Payslip[]
+}
+
+model LeaveRequest {
+  id         String      @id @default(cuid())
+  employeeId String
+  type       String
+  startDate  DateTime
+  endDate    DateTime
+  days       Float
+  reason     String
+  status     LeaveStatus @default(PENDING)
+  createdAt  DateTime    @default(now())
+  employee   Employee    @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+}
+
+model Attendance {
+  id         String   @id @default(cuid())
+  employeeId String
+  date       DateTime
+  clockIn    DateTime?
+  clockOut   DateTime?
+  hours      Float    @default(0)
+  status     String
+  employee   Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@unique([employeeId, date])
+}
+
+model PayrollRun {
+  id          String        @id @default(cuid())
+  tenantId    String
+  period      String
+  grossAmount Float
+  netAmount   Float
+  status      PayrollStatus @default(DRAFT)
+  processedAt DateTime?
+  tenant      Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  payslips    Payslip[]
+}
+
+model Payslip {
+  id           String        @id @default(cuid())
+  employeeId   String
+  payrollRunId String
+  grossPay     Float
+  deductions   Float
+  netPay       Float
+  status       PayslipStatus @default(GENERATED)
+  employee     Employee      @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  payrollRun   PayrollRun    @relation(fields: [payrollRunId], references: [id], onDelete: Cascade)
+}
+
+model Candidate {
+  id          String   @id @default(cuid())
+  tenantId    String
+  name        String
+  email       String
+  roleApplied String
+  source      String
+  stage       String
+  rating      Int      @default(0)
+  appliedAt   DateTime @default(now())
+  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+}
