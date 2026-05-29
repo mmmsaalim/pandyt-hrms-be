@@ -3,6 +3,7 @@ import {
   ForbiddenException,
   Get,
   Param,
+  ParseIntPipe,
   Query,
   Req,
   UseGuards,
@@ -26,8 +27,8 @@ export class DashboardController {
   @Get('company-admin')
   @Roles('COMPANY_ADMIN')
   companyAdmin(
-    @Req() req: { user?: { sub: string; roles?: string[] } },
-    @Query('tenantId') tenantId?: string,
+    @Req() req: { user?: { sub: number; roles?: string[] } },
+    @Query('tenantId') tenantId?: number,
   ) {
     const user = req.user;
     if (!user?.sub) {
@@ -43,7 +44,7 @@ export class DashboardController {
 
   @Get('employee/me')
   @Roles('EMPLOYEE')
-  employeeSelf(@Req() req: { user?: { sub: string } }) {
+  employeeSelf(@Req() req: { user?: { sub: number } }) {
     const user = req.user;
     if (!user?.sub) {
       throw new ForbiddenException('Unauthorized role access.');
@@ -54,7 +55,7 @@ export class DashboardController {
 
   @Get('employee/:employeeId')
   @Roles('COMPANY_ADMIN')
-  employee(@Param('employeeId') employeeId: string) {
+  employee(@Param('employeeId', ParseIntPipe) employeeId: number) {
     return this.dashboardService.employeeMetrics(employeeId);
   }
 }

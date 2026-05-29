@@ -5,7 +5,7 @@ import { PrismaService } from '../prisma/prisma.service';
 export class ReportsService {
   constructor(private readonly prisma: PrismaService) {}
 
-  private requireTenant(user: { tenantId?: string } | undefined): string {
+  private requireTenant(user: { tenantId?: number } | undefined): number {
     const tenantId = user?.tenantId;
     if (!tenantId) {
       throw new ForbiddenException('Tenant context is required.');
@@ -14,7 +14,7 @@ export class ReportsService {
     return tenantId;
   }
 
-  async summary(user: { tenantId?: string } | undefined) {
+  async summary(user: { tenantId?: number } | undefined) {
     const tenantId = this.requireTenant(user);
 
     const [employees, leaves, payrollRuns] = await Promise.all([

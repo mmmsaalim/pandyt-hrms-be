@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, ParseIntPipe, Patch, Post, UseGuards } from '@nestjs/common';
 import { EmployeesService } from './employees.service';
 import { CreateEmployeeDto } from './dto/create-employee.dto';
 import { UpdateEmployeeDto } from './dto/update-employee.dto';
@@ -15,15 +15,15 @@ export class EmployeesController {
 
   @Get()
   @Roles('COMPANY_ADMIN')
-  findAll(@Req() req: { user?: { sub: string; roles?: string[] } }) {
+  findAll(@Req() req: { user?: { sub: number; roles?: string[] } }) {
     return this.employeesService.findAll(req.user);
   }
 
   @Get(':id')
   @Roles('COMPANY_ADMIN', 'EMPLOYEE')
   findOne(
-    @Param('id') id: string,
-    @Req() req: { user?: { sub: string; roles?: string[] } },
+    @Param('id', ParseIntPipe) id: number,
+    @Req() req: { user?: { sub: number; roles?: string[] } },
   ) {
     return this.employeesService.findOne(id, req.user);
   }
@@ -32,16 +32,16 @@ export class EmployeesController {
   @Roles('COMPANY_ADMIN')
   create(
     @Body() dto: CreateEmployeeDto,
-    @Req() req: { user?: { sub: string; roles?: string[] } },
+    @Req() req: { user?: { sub: number; roles?: string[] } },
   ) {
     return this.employeesService.create(dto, req.user);
   }
 
   @Post('invite')
-  @Roles('COMPANY_ADMIN')
+    @Roles('COMPANY_ADMIN', 'HR_MANAGER')
   inviteEmployee(
     @Body() dto: InviteEmployeeDto,
-    @Req() req: { user?: { sub: string; roles?: string[] } },
+    @Req() req: { user?: { sub: number; roles?: string[] } },
   ) {
     return this.employeesService.inviteEmployee(dto, req.user);
   }
@@ -49,9 +49,9 @@ export class EmployeesController {
   @Patch(':id')
   @Roles('COMPANY_ADMIN')
   update(
-    @Param('id') id: string,
+    @Param('id', ParseIntPipe) id: number,
     @Body() dto: UpdateEmployeeDto,
-    @Req() req: { user?: { sub: string; roles?: string[] } },
+    @Req() req: { user?: { sub: number; roles?: string[] } },
   ) {
     return this.employeesService.update(id, dto, req.user);
   }
@@ -59,9 +59,27 @@ export class EmployeesController {
   @Delete(':id')
   @Roles('COMPANY_ADMIN')
   remove(
-    @Param('id') id: string,
-    @Req() req: { user?: { sub: string; roles?: string[] } },
+    @Param('id', ParseIntPipe) id: number,
+    @Req() req: { user?: { sub: number; roles?: string[] } },
   ) {
     return this.employeesService.remove(id, req.user);
+  }
+
+  @Delete(':id/anonymize')
+  @Roles('COMPANY_ADMIN')
+  anonymize(
+    @Param('id', ParseIntPipe) id: number,
+    @Req() req: { user?: { sub: number; roles?: string[] } },
+  ) {
+    return this.employeesService.anonymize(id, req.user);
+  }
+
+  @Get(':id/export-data')
+  @Roles('COMPANY_ADMIN', 'EMPLOYEE')
+  exportData(
+    @Param('id', ParseIntPipe) id: number,
+    @Req() req: { user?: { sub: number; roles?: string[] } },
+  ) {
+    return this.employeesService.exportData(id, req.user);
   }
 }

@@ -26,7 +26,7 @@ export class InvitationsController {
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('SUPER_ADMIN', 'COMPANY_ADMIN')
   @Get()
-  list(@Req() req: { user?: { sub: string; roles?: string[]; tenantId?: string } }) {
+  list(@Req() req: { user?: { sub: number; roles?: string[]; tenantId?: number } }) {
     return this.invitationsService.listInvitations(req.user!);
   }
 
@@ -35,7 +35,7 @@ export class InvitationsController {
   @Post('resend')
   resend(
     @Body() dto: ResendInvitationDto,
-    @Req() req: { user?: { sub: string; roles?: string[]; tenantId?: string } },
+    @Req() req: { user?: { sub: number; roles?: string[]; tenantId?: number } },
   ) {
     return this.invitationsService.resendInvitation(dto.email, req.user!);
   }

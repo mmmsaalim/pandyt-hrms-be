@@ -1,8 +1,8 @@
-import { IsDateString, IsNumber, IsOptional, IsString } from 'class-validator';
+import { IsDateString, IsInt, IsNumber, IsOptional, IsString } from 'class-validator';
 
 export class CreateAttendanceDto {
-  @IsString()
-  employeeId!: string;
+  @IsInt()
+  employeeId!: number;
 
   @IsDateString()
   date!: string;

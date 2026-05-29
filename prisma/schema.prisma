@@ -25,6 +25,12 @@ enum TenantStatus {
   SUSPENDED
 }
 
+enum TenantLeadStatus {
+  PENDING
+  CONVERTED
+  DELETED
+}
+
 enum EmploymentStatus {
   ACTIVE
   ON_PROBATION
@@ -40,6 +46,8 @@ enum LeaveStatus {
 enum PayrollStatus {
   DRAFT
   PROCESSED
+  PROCESSING
+  COMPLETED
 }
 
 enum PayslipStatus {
@@ -48,13 +56,13 @@ enum PayslipStatus {
 }
 
 model User {
-  id           String      @id @default(cuid())
+  id           Int         @id @default(autoincrement())
   email        String      @unique
   passwordHash String
   firstName    String
   lastName     String
   status       UserStatus  @default(ACTIVE)
-  tenantId     String?
+  tenantId     Int?
   createdAt    DateTime    @default(now())
   updatedAt    DateTime    @updatedAt
   tenant       Tenant?     @relation(fields: [tenantId], references: [id], onDelete: SetNull)
@@ -64,40 +72,91 @@ model User {
 }
 
 model Role {
-  id    String     @id @default(cuid())
-  name  String     @unique
-  users UserRole[]
+  id              Int              @id @default(autoincrement())
+  name            String           @map("role")
+  tenantId        Int?             @map("tenant_id")
+  description     String?
+  createdDate     DateTime         @default(now()) @map("created_date")
+  updatedDate     DateTime         @updatedAt @map("updated_date")
+  createdBy       Int?             @map("created_by")
+  updatedBy       Int?             @map("updated_by")
+  tenant          Tenant?          @relation(fields: [tenantId], references: [id], onDelete: SetNull)
+  users           UserRole[]
+  rolePermissions RolePermission[]
+
+  @@unique([tenantId, name])
+  @@index([tenantId])
+  @@map("roles")
 }
 
 model UserRole {
-  id     String @id @default(cuid())
-  userId String
-  roleId String
-  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
-  role   Role   @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  id          Int      @id @default(autoincrement())
+  userId      Int      @map("user_id")
+  roleId      Int      @map("role_id")
+  createdDate DateTime @default(now()) @map("created_date")
+  updatedDate DateTime @updatedAt @map("updated_date")
+  createdBy   Int?     @map("created_by")
+  updatedBy   Int?     @map("updated_by")
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role        Role     @relation(fields: [roleId], references: [id], onDelete: Cascade)
 
   @@unique([userId, roleId])
+  @@map("user_role")
+}
+
+model Permission {
+  id              Int              @id @default(autoincrement())
+  permission      String           @unique
+  module          String
+  description     String?
+  createdDate     DateTime         @default(now()) @map("created_date")
+  updatedDate     DateTime         @updatedAt @map("updated_date")
+  rolePermissions RolePermission[]
+
+  @@map("permissions")
+}
+
+model RolePermission {
+  id           Int        @id @default(autoincrement())
+  roleId       Int        @map("role_id")
+  permissionId Int        @map("permission_id")
+  createdDate  DateTime   @default(now()) @map("created_date")
+  createdBy    Int?       @map("created_by")
+  role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@unique([roleId, permissionId])
+  @@index([permissionId])
+  @@map("roles_permission")
 }
 
 model Tenant {
-  id          String         @id @default(cuid())
-  name        String
-  plan        String
-  status      TenantStatus   @default(ACTIVE)
-  seats       Int            @default(5)
-  createdAt   DateTime       @default(now())
-  updatedAt   DateTime       @updatedAt
-  users       User[]
-  employees   Employee[]
-  payrollRuns PayrollRun[]
-  candidates  Candidate[]
-  invitations Invitation[]
+  id             Int            @id @default(autoincrement())
+  name           String
+  companyCode    String?        @unique
+  plan           String
+  status         TenantStatus   @default(ACTIVE)
+  leadStatus     TenantLeadStatus @default(PENDING)
+  seats          Int            @default(5)
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+  users          User[]
+  roles          Role[]
+  employees      Employee[]
+  payrollRuns    PayrollRun[]
+  candidates     Candidate[]
+  invitations    Invitation[]
+  departments    Department[]
+  teams          Team[]
+  locations      Location[]
+  leavePolicies  LeavePolicy[]
+  leaveBalances  LeaveBalance[]
 }
 
 model Invitation {
-  id         String           @id @default(cuid())
-  tenantId   String
-  userId     String
+  id         Int              @id @default(autoincrement())
+  tenantId   Int
+  userId     Int
   email      String
   role       String
   status     InvitationStatus @default(PENDING)
@@ -113,24 +172,36 @@ model Invitation {
 }
 
 model Employee {
-  id               String           @id @default(cuid())
-  tenantId         String
-  userId           String           @unique
+  id               Int              @id @default(autoincrement())
+  tenantId         Int
+  userId           Int              @unique
   employeeCode     String           @unique
   department       String
   designation      String
   joinedDate       DateTime
+  salary           Float            @default(0)
   employmentStatus EmploymentStatus @default(ACTIVE)
+  deletedAt        DateTime?
+  departmentId     Int?
+  teamId           Int?
+  locationId       Int?
+  managerId        Int?
   tenant           Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   user             User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  departmentRelation Department?    @relation("EmployeeDepartment", fields: [departmentId], references: [id], onDelete: SetNull)
+  team             Team?            @relation(fields: [teamId], references: [id], onDelete: SetNull)
+  location         Location?        @relation(fields: [locationId], references: [id], onDelete: SetNull)
+  manager          Employee?        @relation("EmployeeToManager", fields: [managerId], references: [id], onDelete: SetNull)
+  directReports    Employee[]       @relation("EmployeeToManager")
   leaveRequests    LeaveRequest[]
   attendance       Attendance[]
   payslips         Payslip[]
+  leaveBalances    LeaveBalance[]
 }
 
 model LeaveRequest {
-  id         String      @id @default(cuid())
-  employeeId String
+  id         Int         @id @default(autoincrement())
+  employeeId Int
   type       String
   startDate  DateTime
   endDate    DateTime
@@ -142,8 +213,8 @@ model LeaveRequest {
 }
 
 model Attendance {
-  id         String   @id @default(cuid())
-  employeeId String
+  id         Int      @id @default(autoincrement())
+  employeeId Int
   date       DateTime
   clockIn    DateTime?
   clockOut   DateTime?
@@ -155,8 +226,8 @@ model Attendance {
 }
 
 model PayrollRun {
-  id          String        @id @default(cuid())
-  tenantId    String
+  id          Int           @id @default(autoincrement())
+  tenantId    Int
   period      String
   grossAmount Float
   netAmount   Float
@@ -167,10 +238,16 @@ model PayrollRun {
 }
 
 model Payslip {
-  id           String        @id @default(cuid())
-  employeeId   String
-  payrollRunId String
+  id           Int           @id @default(autoincrement())
+  employeeId   Int
+  payrollRunId Int
+  basicPay     Float         @default(0)
+  allowances   Float         @default(0)
   grossPay     Float
+  epfEmployee  Float         @default(0)
+  epfEmployer  Float         @default(0)
+  etfEmployer  Float         @default(0)
+  payeTax      Float         @default(0)
   deductions   Float
   netPay       Float
   status       PayslipStatus @default(GENERATED)
@@ -179,8 +256,8 @@ model Payslip {
 }
 
 model Candidate {
-  id          String   @id @default(cuid())
-  tenantId    String
+  id          Int      @id @default(autoincrement())
+  tenantId    Int
   name        String
   email       String
   roleApplied String
@@ -189,4 +266,62 @@ model Candidate {
   rating      Int      @default(0)
   appliedAt   DateTime @default(now())
   tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+}
+
+model Location {
+  id          Int          @id @default(autoincrement())
+  tenantId    Int
+  name        String
+  address     String?
+  tenant      Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  departments Department[]
+  employees   Employee[]
+}
+
+model Department {
+  id          Int        @id @default(autoincrement())
+  tenantId    Int
+  name        String
+  managerId   Int?
+  locationId  Int?
+  tenant      Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  location    Location?  @relation(fields: [locationId], references: [id], onDelete: SetNull)
+  teams       Team[]
+  employees   Employee[] @relation("EmployeeDepartment")
+}
+
+model Team {
+  id           Int        @id @default(autoincrement())
+  tenantId     Int
+  departmentId Int
+  name         String
+  tenant       Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  department   Department @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+  employees    Employee[]
+}
+
+model LeavePolicy {
+  id                Int            @id @default(autoincrement())
+  tenantId          Int
+  name              String
+  days              Float
+  carryForwardLimit Float          @default(0)
+  accrualRate       Float          @default(0)
+  tenant            Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  leaveBalances     LeaveBalance[]
+}
+
+model LeaveBalance {
+  id            Int         @id @default(autoincrement())
+  tenantId      Int
+  employeeId    Int
+  leavePolicyId Int
+  allocated     Float
+  used          Float       @default(0)
+  accrued       Float       @default(0)
+  tenant        Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  employee      Employee    @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  leavePolicy   LeavePolicy @relation(fields: [leavePolicyId], references: [id], onDelete: Cascade)
+
+  @@unique([employeeId, leavePolicyId])
 }

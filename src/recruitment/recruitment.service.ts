@@ -7,7 +7,7 @@ import { UpdateCandidateDto } from './dto/update-candidate.dto';
 export class RecruitmentService {
   constructor(private readonly prisma: PrismaService) {}
 
-  private requireTenant(user: { tenantId?: string } | undefined): string {
+  private requireTenant(user: { tenantId?: number } | undefined): number {
     const tenantId = user?.tenantId;
     if (!tenantId) {
       throw new ForbiddenException('Tenant context is required.');
@@ -16,7 +16,7 @@ export class RecruitmentService {
     return tenantId;
   }
 
-  findAll(user: { tenantId?: string } | undefined) {
+  findAll(user: { tenantId?: number } | undefined) {
     const tenantId = this.requireTenant(user);
     return this.prisma.candidate.findMany({
       where: { tenantId },
@@ -24,7 +24,7 @@ export class RecruitmentService {
     });
   }
 
-  create(dto: CreateCandidateDto, user: { tenantId?: string } | undefined) {
+  create(dto: CreateCandidateDto, user: { tenantId?: number } | undefined) {
     const tenantId = this.requireTenant(user);
     return this.prisma.candidate.create({
       data: {
@@ -35,9 +35,9 @@ export class RecruitmentService {
   }
 
   async update(
-    id: string,
+    id: number,
     dto: UpdateCandidateDto,
-    user: { tenantId?: string } | undefined,
+    user: { tenantId?: number } | undefined,
   ) {
     const tenantId = this.requireTenant(user);
     const row = await this.prisma.candidate.findUnique({
@@ -52,7 +52,7 @@ export class RecruitmentService {
     return this.prisma.candidate.update({ where: { id }, data: dto });
   }
 
-  async remove(id: string, user: { tenantId?: string } | undefined) {
+  async remove(id: number, user: { tenantId?: number } | undefined) {
     const tenantId = this.requireTenant(user);
     const row = await this.prisma.candidate.findUnique({
       where: { id },

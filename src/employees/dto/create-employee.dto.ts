@@ -1,4 +1,4 @@
-import { IsDateString, IsEnum, IsString } from 'class-validator';
+import { IsDateString, IsEnum, IsInt, IsString } from 'class-validator';
 
 export enum EmploymentStatusEnum {
   ACTIVE = 'ACTIVE',
@@ -7,11 +7,11 @@ export enum EmploymentStatusEnum {
 }
 
 export class CreateEmployeeDto {
-  @IsString()
-  tenantId!: string;
+  @IsInt()
+  tenantId!: number;
 
-  @IsString()
-  userId!: string;
+  @IsInt()
+  userId!: number;
 
   @IsString()
   employeeCode!: string;

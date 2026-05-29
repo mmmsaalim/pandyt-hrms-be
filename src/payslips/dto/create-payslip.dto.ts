@@ -1,4 +1,4 @@
-import { IsEnum, IsNumber, IsString } from 'class-validator';
+import { IsEnum, IsInt, IsNumber } from 'class-validator';
 
 export enum PayslipStatusEnum {
   GENERATED = 'GENERATED',
@@ -6,11 +6,11 @@ export enum PayslipStatusEnum {
 }
 
 export class CreatePayslipDto {
-  @IsString()
-  employeeId!: string;
+  @IsInt()
+  employeeId!: number;
 
-  @IsString()
-  payrollRunId!: string;
+  @IsInt()
+  payrollRunId!: number;
 
   @IsNumber()
   grossPay!: number;

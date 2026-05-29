@@ -4,6 +4,7 @@ import {
   Delete,
   Get,
   Param,
+  ParseIntPipe,
   Patch,
   Post,
   Req,
@@ -23,15 +24,43 @@ export class AttendanceController {
 
   @Get()
   @Roles('COMPANY_ADMIN', 'EMPLOYEE')
-  findAll(@Req() req: { user?: { sub: string; roles?: string[] } }) {
+  findAll(@Req() req: { user?: { sub: number; roles?: string[] } }) {
     return this.attendanceService.findAll(req.user);
+  }
+
+  @Post('clock-in')
+  @Roles('EMPLOYEE', 'COMPANY_ADMIN')
+  clockIn(@Req() req: { user?: { sub: number; roles?: string[] } }) {
+    return this.attendanceService.clockIn(req.user);
+  }
+
+  @Post('clock-out')
+  @Roles('EMPLOYEE', 'COMPANY_ADMIN')
+  clockOut(@Req() req: { user?: { sub: number; roles?: string[] } }) {
+    return this.attendanceService.clockOut(req.user);
+  }
+
+  @Post('override')
+  @Roles('COMPANY_ADMIN')
+  override(
+    @Body()
+    dto: {
+      employeeId: number;
+      date: string;
+      clockIn?: string;
+      clockOut?: string;
+      reason: string;
+    },
+    @Req() req: { user?: { sub: number; roles?: string[] } },
+  ) {
+    return this.attendanceService.override(dto, req.user);
   }
 
   @Post()
   @Roles('COMPANY_ADMIN', 'EMPLOYEE')
   create(
     @Body() dto: CreateAttendanceDto,
-    @Req() req: { user?: { sub: string; roles?: string[] } },
+    @Req() req: { user?: { sub: number; roles?: string[] } },
   ) {
     return this.attendanceService.create(dto, req.user);
   }
@@ -39,9 +68,9 @@ export class AttendanceController {
   @Patch(':id')
   @Roles('COMPANY_ADMIN')
   update(
-    @Param('id') id: string,
+    @Param('id', ParseIntPipe) id: number,
     @Body() dto: UpdateAttendanceDto,
-    @Req() req: { user?: { sub: string; roles?: string[] } },
+    @Req() req: { user?: { sub: number; roles?: string[] } },
   ) {
     return this.attendanceService.update(id, dto, req.user);
   }
@@ -49,8 +78,8 @@ export class AttendanceController {
   @Delete(':id')
   @Roles('COMPANY_ADMIN')
   remove(
-    @Param('id') id: string,
-    @Req() req: { user?: { sub: string; roles?: string[] } },
+    @Param('id', ParseIntPipe) id: number,
+    @Req() req: { user?: { sub: number; roles?: string[] } },
   ) {
     return this.attendanceService.remove(id, req.user);
   }

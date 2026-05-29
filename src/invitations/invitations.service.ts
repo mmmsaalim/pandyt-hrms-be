@@ -6,8 +6,8 @@ import { PrismaService } from '../prisma/prisma.service';
 import { EmailService } from '../notifications/email.service';
 
 type CreateInvitationInput = {
-  tenantId: string;
-  userId: string;
+  tenantId: number;
+  userId: number;
   email: string;
   role: string;
   fullName: string;
@@ -132,37 +132,48 @@ export class InvitationsService {
 
     const passwordHash = await bcrypt.hash(password, 10);
 
-    await this.prisma.$transaction([
-      this.prisma.user.update({
+    await this.prisma.$transaction(async (tx) => {
+      await tx.user.update({
         where: { id: invitation.userId },
         data: {
           passwordHash,
           status: 'ACTIVE',
           tenantId: invitation.tenantId,
         },
-      }),
-      this.prisma.invitation.update({
+      });
+
+      await tx.invitation.update({
         where: { id: invitation.id },
         data: {
           status: 'ACCEPTED',
           acceptedAt: new Date(),
         },
-      }),
-    ]);
+      });
+
+      if (invitation.role === 'COMPANY_ADMIN') {
+        await tx.tenant.updateMany({
+          where: {
+            id: invitation.tenantId,
+            leadStatus: 'PENDING',
+          },
+          data: { leadStatus: 'CONVERTED' },
+        });
+      }
+    });
 
     return { message: 'Account activated successfully. Please log in.' };
   }
 
   async listInvitations(requestingUser: {
-    sub: string;
+    sub: number;
     roles?: string[];
-    tenantId?: string;
+    tenantId?: number;
   }) {
     const isSuper = requestingUser.roles?.includes('SUPER_ADMIN');
 
     const where = isSuper
-      ? {}
-      : { tenantId: requestingUser.tenantId ?? '__none__' };
+      ? undefined
+      : { tenantId: requestingUser.tenantId ?? -1 };
 
     const rows = await this.prisma.invitation.findMany({
       where,
@@ -188,10 +199,10 @@ export class InvitationsService {
 
   async resendInvitation(
     email: string,
-    requestingUser: { sub: string; roles?: string[]; tenantId?: string },
+    requestingUser: { sub: number; roles?: string[]; tenantId?: number },
   ) {
     const isSuper = requestingUser.roles?.includes('SUPER_ADMIN');
-    const tenantFilter = isSuper ? {} : { tenantId: requestingUser.tenantId ?? '__none__' };
+    const tenantFilter = isSuper ? {} : { tenantId: requestingUser.tenantId ?? -1 };
 
     const invitation = await this.prisma.invitation.findFirst({
       where: { email, status: 'PENDING', ...tenantFilter },

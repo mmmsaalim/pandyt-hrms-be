@@ -1,5 +1,5 @@
 import { IsEnum, IsInt, IsOptional, IsString, Min } from 'class-validator';
-import { TenantStatusEnum } from './create-tenant.dto';
+import { TenantLeadStatusEnum, TenantStatusEnum } from './create-tenant.dto';
 
 export class UpdateTenantDto {
   @IsOptional()
@@ -8,11 +8,19 @@ export class UpdateTenantDto {
 
   @IsOptional()
   @IsString()
+  companyCode?: string;
+
+  @IsOptional()
+  @IsString()
   plan?: string;
 
   @IsOptional()
   @IsEnum(TenantStatusEnum)
   status?: TenantStatusEnum;
+
+  @IsOptional()
+  @IsEnum(TenantLeadStatusEnum)
+  leadStatus?: TenantLeadStatusEnum;
 
   @IsOptional()
   @IsInt()

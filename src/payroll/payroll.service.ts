@@ -1,22 +1,72 @@
-import { ForbiddenException, Injectable } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreatePayrollRunDto } from './dto/create-payroll-run.dto';
 import { UpdatePayrollRunDto } from './dto/update-payroll-run.dto';
+
+type RequestUser = { sub?: number; roles?: string[]; tenantId?: number } | undefined;
+
+// ─────────────────────────────────────────────────
+// Sri Lanka Statutory Calculator (IRD / EPF / ETF)
+// ─────────────────────────────────────────────────
+function calculateStatutory(basicPay: number, allowances: number) {
+  const grossPay = basicPay + allowances;
+
+  // EPF (Employee Provident Fund)
+  const epfEmployee = Math.round(grossPay * 0.08 * 100) / 100;  // 8%
+  const epfEmployer = Math.round(grossPay * 0.12 * 100) / 100;  // 12%
+
+  // ETF (Employee Trust Fund – employer only)
+  const etfEmployer = Math.round(grossPay * 0.03 * 100) / 100;  // 3%
+
+  // PAYE – IRD monthly tax schedule (LKR, 2024)
+  // Annual gross = grossPay * 12
+  const annualGross = grossPay * 12;
+  let annualPaye = 0;
+  if (annualGross <= 1_200_000) {
+    annualPaye = 0;
+  } else if (annualGross <= 1_800_000) {
+    annualPaye = (annualGross - 1_200_000) * 0.06;
+  } else if (annualGross <= 2_400_000) {
+    annualPaye = 36_000 + (annualGross - 1_800_000) * 0.12;
+  } else if (annualGross <= 3_600_000) {
+    annualPaye = 108_000 + (annualGross - 2_400_000) * 0.18;
+  } else if (annualGross <= 6_000_000) {
+    annualPaye = 324_000 + (annualGross - 3_600_000) * 0.24;
+  } else {
+    annualPaye = 900_000 + (annualGross - 6_000_000) * 0.36;
+  }
+  const payeTax = Math.round((annualPaye / 12) * 100) / 100;
+
+  const totalDeductions = epfEmployee + payeTax;
+  const netPay = Math.round((grossPay - totalDeductions) * 100) / 100;
+
+  return { grossPay, epfEmployee, epfEmployer, etfEmployer, payeTax, deductions: totalDeductions, netPay };
+}
 
 @Injectable()
 export class PayrollService {
   constructor(private readonly prisma: PrismaService) {}
 
-  private requireTenant(user: { tenantId?: string } | undefined): string {
+  private requireTenant(user: RequestUser): number {
     const tenantId = user?.tenantId;
     if (!tenantId) {
       throw new ForbiddenException('Tenant context is required.');
     }
-
     return tenantId;
   }
 
-  findAll(user: { tenantId?: string } | undefined) {
+  private async assertOwnership(id: number, tenantId: number) {
+    const row = await this.prisma.payrollRun.findUnique({
+      where: { id },
+      select: { tenantId: true, status: true },
+    });
+    if (!row || row.tenantId !== tenantId) {
+      throw new ForbiddenException('Cannot access payroll for another tenant.');
+    }
+    return row;
+  }
+
+  findAll(user: RequestUser) {
     const tenantId = this.requireTenant(user);
     return this.prisma.payrollRun.findMany({
       where: { tenantId },
@@ -24,46 +74,108 @@ export class PayrollService {
     });
   }
 
-  create(dto: CreatePayrollRunDto, user: { tenantId?: string } | undefined) {
+  create(dto: CreatePayrollRunDto, user: RequestUser) {
     const tenantId = this.requireTenant(user);
     return this.prisma.payrollRun.create({
       data: {
         ...dto,
         tenantId,
-        processedAt: dto.processedAt ? new Date(dto.processedAt) : null,
+        status: 'DRAFT',
+        grossAmount: 0,
+        netAmount: 0,
+        processedAt: null,
       },
     });
   }
 
-  async update(
-    id: string,
-    dto: UpdatePayrollRunDto,
-    user: { tenantId?: string } | undefined,
-  ) {
+  /**
+   * Process payroll: iterates all active employees, computes LKR statutory
+   * deductions, creates Payslip records, and marks the run as COMPLETED.
+   */
+  async process(id: number, user: RequestUser) {
     const tenantId = this.requireTenant(user);
-    const row = await this.prisma.payrollRun.findUnique({
+    const run = await this.assertOwnership(id, tenantId);
+
+    if (run.status === 'COMPLETED') {
+      throw new BadRequestException('This payroll run has already been completed.');
+    }
+    if (run.status === 'PROCESSING') {
+      throw new BadRequestException('This payroll run is already in progress.');
+    }
+
+    // Mark as PROCESSING
+    await this.prisma.payrollRun.update({
       where: { id },
-      select: { tenantId: true },
+      data: { status: 'PROCESSING' },
     });
 
-    if (!row || row.tenantId !== tenantId) {
-      throw new ForbiddenException('Cannot update payroll for another tenant.');
+    const employees = await this.prisma.employee.findMany({
+      where: { tenantId, employmentStatus: 'ACTIVE', deletedAt: null },
+      select: { id: true, salary: true },
+    });
+
+    if (employees.length === 0) {
+      await this.prisma.payrollRun.update({
+        where: { id },
+        data: { status: 'DRAFT' },
+      });
+      throw new BadRequestException('No active employees found for this tenant.');
+    }
+
+    let totalGross = 0;
+    let totalNet = 0;
+
+    // Delete any pre-existing payslips for this run (re-process safety)
+    await this.prisma.payslip.deleteMany({ where: { payrollRunId: id } });
+
+    const payslipData = employees.map((emp) => {
+      const { grossPay, epfEmployee, epfEmployer, etfEmployer, payeTax, deductions, netPay } =
+        calculateStatutory(emp.salary, 0);
+      totalGross += grossPay;
+      totalNet += netPay;
+      return {
+        employeeId: emp.id,
+        payrollRunId: id,
+        basicPay: emp.salary,
+        allowances: 0,
+        grossPay,
+        epfEmployee,
+        epfEmployer,
+        etfEmployer,
+        payeTax,
+        deductions,
+        netPay,
+        status: 'GENERATED' as const,
+      };
+    });
+
+    await this.prisma.payslip.createMany({ data: payslipData });
+
+    return this.prisma.payrollRun.update({
+      where: { id },
+      data: {
+        status: 'COMPLETED',
+        grossAmount: Math.round(totalGross * 100) / 100,
+        netAmount: Math.round(totalNet * 100) / 100,
+        processedAt: new Date(),
+      },
+    });
+  }
+
+  async update(id: number, dto: UpdatePayrollRunDto, user: RequestUser) {
+    const tenantId = this.requireTenant(user);
+    const row = await this.assertOwnership(id, tenantId);
+
+    if (row.status === 'COMPLETED') {
+      throw new BadRequestException('Cannot update a completed payroll run.');
     }
 
     return this.prisma.payrollRun.update({ where: { id }, data: dto });
   }
 
-  async remove(id: string, user: { tenantId?: string } | undefined) {
+  async remove(id: number, user: RequestUser) {
     const tenantId = this.requireTenant(user);
-    const row = await this.prisma.payrollRun.findUnique({
-      where: { id },
-      select: { tenantId: true },
-    });
-
-    if (!row || row.tenantId !== tenantId) {
-      throw new ForbiddenException('Cannot remove payroll for another tenant.');
-    }
-
+    await this.assertOwnership(id, tenantId);
     return this.prisma.payrollRun.delete({ where: { id } });
   }
 }

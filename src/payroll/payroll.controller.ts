@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, ParseIntPipe, Patch, Post, Req, UseGuards } from '@nestjs/common';
 import { PayrollService } from './payroll.service';
 import { CreatePayrollRunDto } from './dto/create-payroll-run.dto';
 import { UpdatePayrollRunDto } from './dto/update-payroll-run.dto';
@@ -13,7 +13,7 @@ export class PayrollController {
 
   @Get()
   @Roles('COMPANY_ADMIN')
-  findAll(@Req() req: { user?: { sub: string; roles?: string[]; tenantId?: string } }) {
+  findAll(@Req() req: { user?: { sub: number; roles?: string[]; tenantId?: number } }) {
     return this.payrollService.findAll(req.user);
   }
 
@@ -21,17 +21,32 @@ export class PayrollController {
   @Roles('COMPANY_ADMIN')
   create(
     @Body() dto: CreatePayrollRunDto,
-    @Req() req: { user?: { sub: string; roles?: string[]; tenantId?: string } },
+    @Req() req: { user?: { sub: number; roles?: string[]; tenantId?: number } },
   ) {
     return this.payrollService.create(dto, req.user);
+  }
+
+  /**
+   * POST /payroll/:id/process
+   * Triggers the Sri Lanka statutory payroll calculation engine.
+   * Computes EPF (8%/12%), ETF (3%), and PAYE for all active employees
+   * and generates payslips in one atomic run.
+   */
+  @Post(':id/process')
+  @Roles('COMPANY_ADMIN')
+  process(
+    @Param('id', ParseIntPipe) id: number,
+    @Req() req: { user?: { sub: number; roles?: string[]; tenantId?: number } },
+  ) {
+    return this.payrollService.process(id, req.user);
   }
 
   @Patch(':id')
   @Roles('COMPANY_ADMIN')
   update(
-    @Param('id') id: string,
+    @Param('id', ParseIntPipe) id: number,
     @Body() dto: UpdatePayrollRunDto,
-    @Req() req: { user?: { sub: string; roles?: string[]; tenantId?: string } },
+    @Req() req: { user?: { sub: number; roles?: string[]; tenantId?: number } },
   ) {
     return this.payrollService.update(id, dto, req.user);
   }
@@ -39,8 +54,8 @@ export class PayrollController {
   @Delete(':id')
   @Roles('COMPANY_ADMIN')
   remove(
-    @Param('id') id: string,
-    @Req() req: { user?: { sub: string; roles?: string[]; tenantId?: string } },
+    @Param('id', ParseIntPipe) id: number,
+    @Req() req: { user?: { sub: number; roles?: string[]; tenantId?: number } },
   ) {
     return this.payrollService.remove(id, req.user);
   }

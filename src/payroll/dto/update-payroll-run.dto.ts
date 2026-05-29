@@ -1,8 +1,7 @@
-import { IsEnum, IsOptional } from 'class-validator';
-import { PayrollStatusEnum } from './create-payroll-run.dto';
+import { IsOptional, IsString } from 'class-validator';
 
 export class UpdatePayrollRunDto {
   @IsOptional()
-  @IsEnum(PayrollStatusEnum)
-  status?: PayrollStatusEnum;
+  @IsString()
+  period?: string;
 }

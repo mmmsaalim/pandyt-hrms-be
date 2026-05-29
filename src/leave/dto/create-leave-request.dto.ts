@@ -1,4 +1,4 @@
-import { IsDateString, IsEnum, IsNumber, IsString } from 'class-validator';
+import { IsDateString, IsEnum, IsInt, IsNumber, IsOptional, IsString } from 'class-validator';
 
 export enum LeaveStatusEnum {
   PENDING = 'PENDING',
@@ -7,8 +7,9 @@ export enum LeaveStatusEnum {
 }
 
 export class CreateLeaveRequestDto {
-  @IsString()
-  employeeId!: string;
+  @IsOptional()
+  @IsInt()
+  employeeId?: number;
 
   @IsString()
   type!: string;
@@ -25,6 +26,7 @@ export class CreateLeaveRequestDto {
   @IsString()
   reason!: string;
 
+  @IsOptional()
   @IsEnum(LeaveStatusEnum)
-  status!: LeaveStatusEnum;
+  status?: LeaveStatusEnum;
 }

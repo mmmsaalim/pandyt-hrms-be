@@ -1,87 +1,116 @@
 # BE Instructions (FlowHR)
 
-## Stack
-- NestJS + Prisma + PostgreSQL
-- API prefix: `/api`
-- Auth: JWT Bearer
+## 1) Purpose
+Single source for backend context. This file is written for both humans and AI agents to quickly understand:
+- project structure
+- current delivery status
+- implemented scope
+- next target scope
 
-## Core Multi-Tenant Rules
-- `SUPER_ADMIN` can onboard companies (tenants) and manage tenant lifecycle.
-- `COMPANY_ADMIN` can manage only users/employees within the same tenant.
-- `EMPLOYEE` is self-scoped for employee data.
-- Tenant scoping is enforced via `tenantId` (`company_id`) relations.
+## 2) Backend Snapshot
+- Stack: NestJS + Prisma + PostgreSQL
+- API base: `/api`
+- Auth session: HttpOnly cookie `flowhr_access_token`
+- Tenant model: strict tenant isolation using `tenantId` and `X-Tenant-ID`
+- Current status: security baseline and core MVP complete, preparing next roadmap scope
 
-## Invitation-Based Onboarding
+## 3) Backend Structure
+Main folders used in backend:
+- `src/auth` - login, logout, JWT, tenant-aware auth
+- `src/tenants` - super admin tenant onboarding/lifecycle
+- `src/employees` - employee CRUD, invite, export, anonymize
+- `src/leave` - request, approvals, policies, balances, accrual
+- `src/attendance` - clock-in/out, overrides
+- `src/payroll` - payroll runs and statutory processing
+- `src/payslips` - payslip records
+- `src/organisation` - locations, departments, teams, tree
+- `src/dashboard` - role-aware dashboard data
+- `src/reports` - reporting endpoints
+- `src/recruitment` - ATS core entities/endpoints
+- `src/invitations` - resolve and accept invitation flow
+- `src/common` - guards, decorators, tenant enforcement
+- `src/prisma` - Prisma service + tenant middleware
+- `prisma/schema.prisma` - DB schema
+- `prisma/seed.ts` - idempotent seed
 
-### Super Admin
-- Endpoint: `POST /api/tenants/onboard`
-- Payload:
-  - `companyName`
-  - `adminName`
-  - `adminEmail`
-  - `subscriptionPlan`
-  - `seats` (optional)
-- Behavior:
-  - Creates tenant
-  - Creates Company Admin user in `PENDING`
-  - Assigns `COMPANY_ADMIN` role
-  - Creates invitation with expiring one-time token
-  - Sends invitation email with set-password link
+## 4) Role Model (Current)
+- `SUPER_ADMIN`: platform tenant lifecycle only
+- `COMPANY_ADMIN`: full tenant operations
+- `HR_MANAGER`: tenant-wide HR operations
+- `TEAM_LEAD`: scoped team operations (direct reports)
+- `EMPLOYEE`: self-scoped operations
 
-### Company Admin
-- Endpoint: `POST /api/employees/invite`
-- Payload:
-  - `name`
-  - `workEmail`
-  - `department`
-  - `designation`
-  - `role` (`EMPLOYEE` or `COMPANY_ADMIN`)
-  - `employeeCode` (optional)
-- Behavior:
-  - Creates user in `PENDING`
-  - Assigns requested role
-  - Creates employee profile in same tenant
-  - Creates invitation and sends email
+## 5) Security Baseline Status (Complete)
+Implemented and active:
+- Tenant-aware login via `companyCode` for non-super-admin users
+- HttpOnly cookie auth session
+- `X-Tenant-ID` enforcement against JWT `tenantId`
+- Prisma tenant middleware guardrails
+- Cross-tenant access rejection
+- One-time expiring invitation token flow
 
-### Invitation Acceptance
-- Resolve invitation: `GET /api/invitations/resolve?token=...`
-- Accept invitation: `POST /api/invitations/accept`
-  - body: `{ token, password }`
-- On accept:
-  - validates token
-  - checks expiry and one-time status
-  - hashes password
-  - activates user (`status=ACTIVE`)
-  - marks invitation accepted
+Key auth/invite endpoints:
+- `POST /api/auth/login`
+- `POST /api/auth/logout`
+- `POST /api/tenants/onboard`
+- `GET /api/invitations/resolve`
+- `POST /api/invitations/accept`
 
-## Security Requirements
-- Invitation tokens are one-time and expiring (`INVITATION_EXPIRY_HOURS`, default 24).
-- Login denies non-active users.
-- Passwords are hashed with bcrypt.
-- Company-scoped operations must validate tenant match.
+## 6) Core MVP Status (Complete)
+Implemented and active:
+- Employee lifecycle: soft-delete, anonymize, export
+- Organisation tree and location/department/team CRUD
+- Leave workflows: apply, approve/reject, balances, policies, accrual
+- Attendance workflows: clock-in/out and HR override
+- Statutory payroll processing (EPF/ETF/PAYE) and payslip generation
+- Dashboard and reports core role-based data
+- Role activation in app logic: `HR_MANAGER` and `TEAM_LEAD`
 
-## Prisma Models
-- `Tenant` (company)
-- `User` (includes optional `tenantId`)
-- `Invitation`
-- `Employee`, `Role`, `UserRole`, etc.
+Key role-invite endpoint:
+- `POST /api/employees/invite`
+- Accepted roles: `EMPLOYEE | TEAM_LEAD | HR_MANAGER | COMPANY_ADMIN`
+- Creator policy:
+  - `COMPANY_ADMIN` can create all listed roles
+  - `HR_MANAGER` can create `EMPLOYEE`, `TEAM_LEAD`, `HR_MANAGER`
 
-## Free Email Provider (Current)
-- `EmailService` supports Brevo API (free tier) if `BREVO_API_KEY` is configured.
-- If key is missing, service logs invitation link to server logs for development.
+## 7) Next Scope (Planned)
+Planned next roadmap items:
+- AI resume parsing and candidate scoring
+- Attrition risk and predictive analytics
+- Advanced notifications (real-time channels)
+- Expanded manager intelligence dashboards
+- Additional automation and quality hardening
 
-## Required Environment Variables
+## 8) Environment and Commands
+Required env:
 - `DATABASE_URL`
 - `JWT_SECRET`
-- `APP_URL` (default `http://localhost:4200`)
-- `INVITATION_EXPIRY_HOURS` (default `24`)
-- `BREVO_API_KEY` (optional for real email sending)
+- `APP_URL`
+- `INVITATION_EXPIRY_HOURS`
+- `BREVO_API_KEY` (optional)
 - `MAIL_FROM` (optional)
 - `MAIL_FROM_NAME` (optional)
 
-## Dev Commands
+Dev commands:
 - `yarn prisma:generate`
 - `yarn prisma:migrate`
 - `yarn prisma:seed`
 - `yarn start:dev`
 - `yarn build`
+
+## 9) Quick Verification Checklist
+- Login tenant user without `companyCode` fails
+- Login tenant user with wrong `companyCode` fails
+- Login tenant user with correct `companyCode` succeeds
+- Protected tenant API without `X-Tenant-ID` fails
+- Protected tenant API with mismatched `X-Tenant-ID` fails
+- Invite with all 4 roles works for `COMPANY_ADMIN`
+- Invite `COMPANY_ADMIN` by `HR_MANAGER` is rejected
+
+## 10) Canonical Reference Docs
+For deeper detail (optional), see:
+- `docs/ARCHITECTURE.md`
+- `docs/PROJECT_STATUS.md`
+- `docs/RBAC_PERMISSION_MATRIX.md`
+- `docs/SETUP_STEPS.md`
+

@@ -3,7 +3,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { CreatePayslipDto } from './dto/create-payslip.dto';
 import { UpdatePayslipDto } from './dto/update-payslip.dto';
 
-type RequestUser = { sub: string; roles?: string[] } | undefined;
+type RequestUser = { sub: number; roles?: string[] } | undefined;
 
 @Injectable()
 export class PayslipsService {
@@ -13,7 +13,7 @@ export class PayslipsService {
     return (user?.roles ?? []).includes(role);
   }
 
-  private async getEmployeeContext(userId: string) {
+  private async getEmployeeContext(userId: number) {
     return this.prisma.employee.findUnique({
       where: { userId },
       select: { id: true, tenantId: true },
@@ -80,7 +80,7 @@ export class PayslipsService {
     return this.prisma.payslip.create({ data: dto });
   }
 
-  async update(id: string, dto: UpdatePayslipDto, user: RequestUser) {
+  async update(id: number, dto: UpdatePayslipDto, user: RequestUser) {
     if (!user?.sub) {
       throw new ForbiddenException('Unauthorized role access.');
     }
@@ -106,7 +106,7 @@ export class PayslipsService {
     return this.prisma.payslip.update({ where: { id }, data: dto });
   }
 
-  async remove(id: string, user: RequestUser) {
+  async remove(id: number, user: RequestUser) {
     if (!user?.sub) {
       throw new ForbiddenException('Unauthorized role access.');
     }

@@ -1,6 +1,18 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  ParseEnumPipe,
+  ParseIntPipe,
+  Patch,
+  Post,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
 import { TenantsService } from './tenants.service';
-import { CreateTenantDto } from './dto/create-tenant.dto';
+import { CreateTenantDto, TenantLeadStatusEnum } from './dto/create-tenant.dto';
 import { UpdateTenantDto } from './dto/update-tenant.dto';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
@@ -24,9 +36,18 @@ export class TenantsController {
     return this.tenantsService.paymentsOverview();
   }
 
+  @Get('leads')
+  @Roles('SUPER_ADMIN')
+  leads(
+    @Query('status', new ParseEnumPipe(TenantLeadStatusEnum, { optional: true }))
+    status?: TenantLeadStatusEnum,
+  ) {
+    return this.tenantsService.findLeads(status);
+  }
+
   @Get(':id')
   @Roles('SUPER_ADMIN')
-  findOne(@Param('id') id: string) {
+  findOne(@Param('id', ParseIntPipe) id: number) {
     return this.tenantsService.findOne(id);
   }
 
@@ -44,13 +65,19 @@ export class TenantsController {
 
   @Patch(':id')
   @Roles('SUPER_ADMIN')
-  update(@Param('id') id: string, @Body() dto: UpdateTenantDto) {
+  update(@Param('id', ParseIntPipe) id: number, @Body() dto: UpdateTenantDto) {
     return this.tenantsService.update(id, dto);
+  }
+
+  @Patch(':id/approve')
+  @Roles('SUPER_ADMIN')
+  approve(@Param('id', ParseIntPipe) id: number) {
+    return this.tenantsService.approve(id);
   }
 
   @Delete(':id')
   @Roles('SUPER_ADMIN')
-  remove(@Param('id') id: string) {
+  remove(@Param('id', ParseIntPipe) id: number) {
     return this.tenantsService.remove(id);
   }
 }

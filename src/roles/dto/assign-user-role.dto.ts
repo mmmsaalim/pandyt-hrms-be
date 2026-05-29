@@ -1,9 +1,9 @@
-import { IsString } from 'class-validator';
+import { IsInt } from 'class-validator';
 
 export class AssignUserRoleDto {
-  @IsString()
-  userId!: string;
+  @IsInt()
+  userId!: number;
 
-  @IsString()
-  roleId!: string;
+  @IsInt()
+  roleId!: number;
 }

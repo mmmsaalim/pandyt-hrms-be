@@ -11,7 +11,7 @@ export class ReportsController {
 
   @Get('summary')
   @Roles('COMPANY_ADMIN')
-  summary(@Req() req: { user?: { sub: string; roles?: string[]; tenantId?: string } }) {
+  summary(@Req() req: { user?: { sub: number; roles?: string[]; tenantId?: number } }) {
     return this.reportsService.summary(req.user);
   }
 }

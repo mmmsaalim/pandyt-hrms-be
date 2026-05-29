@@ -4,6 +4,7 @@ import {
   Delete,
   Get,
   Param,
+  ParseIntPipe,
   Patch,
   Post,
   Req,
@@ -23,7 +24,7 @@ export class PayslipsController {
 
   @Get()
   @Roles('COMPANY_ADMIN', 'EMPLOYEE')
-  findAll(@Req() req: { user?: { sub: string; roles?: string[] } }) {
+  findAll(@Req() req: { user?: { sub: number; roles?: string[] } }) {
     return this.payslipsService.findAll(req.user);
   }
 
@@ -31,7 +32,7 @@ export class PayslipsController {
   @Roles('COMPANY_ADMIN')
   create(
     @Body() dto: CreatePayslipDto,
-    @Req() req: { user?: { sub: string; roles?: string[] } },
+    @Req() req: { user?: { sub: number; roles?: string[] } },
   ) {
     return this.payslipsService.create(dto, req.user);
   }
@@ -39,9 +40,9 @@ export class PayslipsController {
   @Patch(':id')
   @Roles('COMPANY_ADMIN')
   update(
-    @Param('id') id: string,
+    @Param('id', ParseIntPipe) id: number,
     @Body() dto: UpdatePayslipDto,
-    @Req() req: { user?: { sub: string; roles?: string[] } },
+    @Req() req: { user?: { sub: number; roles?: string[] } },
   ) {
     return this.payslipsService.update(id, dto, req.user);
   }
@@ -49,8 +50,8 @@ export class PayslipsController {
   @Delete(':id')
   @Roles('COMPANY_ADMIN')
   remove(
-    @Param('id') id: string,
-    @Req() req: { user?: { sub: string; roles?: string[] } },
+    @Param('id', ParseIntPipe) id: number,
+    @Req() req: { user?: { sub: number; roles?: string[] } },
   ) {
     return this.payslipsService.remove(id, req.user);
   }

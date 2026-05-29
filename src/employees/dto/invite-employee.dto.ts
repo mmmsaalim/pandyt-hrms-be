@@ -14,8 +14,8 @@ export class InviteEmployeeDto {
   designation!: string;
 
   @IsString()
-  @IsIn(['EMPLOYEE', 'COMPANY_ADMIN'])
-  role!: 'EMPLOYEE' | 'COMPANY_ADMIN';
+  @IsIn(['EMPLOYEE', 'HR_MANAGER', 'TEAM_LEAD', 'COMPANY_ADMIN'])
+  role!: 'EMPLOYEE' | 'HR_MANAGER' | 'TEAM_LEAD' | 'COMPANY_ADMIN';
 
   @IsOptional()
   @IsString()

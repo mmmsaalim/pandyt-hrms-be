@@ -4,8 +4,10 @@ import {
   Delete,
   Get,
   Param,
+  ParseIntPipe,
   Patch,
   Post,
+  Query,
   Req,
   UseGuards,
 } from '@nestjs/common';
@@ -22,35 +24,69 @@ export class LeaveController {
   constructor(private readonly leaveService: LeaveService) {}
 
   @Get()
-  @Roles('COMPANY_ADMIN', 'EMPLOYEE')
-  findAll(@Req() req: { user?: { sub: string; roles?: string[] } }) {
+  @Roles('COMPANY_ADMIN', 'EMPLOYEE', 'HR_MANAGER', 'TEAM_LEAD')
+  findAll(@Req() req: { user?: { sub: number; roles?: string[] } }) {
     return this.leaveService.findAll(req.user);
+  }
+
+  // --- Leave Policies ---
+  @Get('policies')
+  @Roles('COMPANY_ADMIN', 'EMPLOYEE', 'HR_MANAGER')
+  findAllPolicies(@Req() req: { user?: { sub: number; roles?: string[] } }) {
+    return this.leaveService.findAllPolicies(req.user);
+  }
+
+  @Post('policies')
+  @Roles('COMPANY_ADMIN', 'HR_MANAGER')
+  createPolicy(
+    @Body() dto: { name: string; days: number; carryForwardLimit?: number; accrualRate?: number },
+    @Req() req: { user?: { sub: number; roles?: string[] } },
+  ) {
+    return this.leaveService.createPolicy(dto, req.user);
+  }
+
+  // --- Leave Balances ---
+  @Get('balances')
+  @Roles('COMPANY_ADMIN', 'EMPLOYEE', 'HR_MANAGER', 'TEAM_LEAD')
+  getBalances(
+    @Query('employeeId') employeeIdStr: string | undefined,
+    @Req() req: { user?: { sub: number; roles?: string[] } },
+  ) {
+    const employeeId = employeeIdStr ? Number(employeeIdStr) : undefined;
+    return this.leaveService.getBalances(employeeId, req.user);
+  }
+
+  // --- Accrual Engine ---
+  @Post('accrual')
+  @Roles('COMPANY_ADMIN', 'HR_MANAGER')
+  runAccrual(@Req() req: { user?: { sub: number; roles?: string[] } }) {
+    return this.leaveService.runAccrual(req.user);
   }
 
   @Post()
   @Roles('COMPANY_ADMIN', 'EMPLOYEE')
   create(
     @Body() dto: CreateLeaveRequestDto,
-    @Req() req: { user?: { sub: string; roles?: string[] } },
+    @Req() req: { user?: { sub: number; roles?: string[] } },
   ) {
     return this.leaveService.create(dto, req.user);
   }
 
   @Patch(':id')
-  @Roles('COMPANY_ADMIN')
+  @Roles('COMPANY_ADMIN', 'HR_MANAGER', 'TEAM_LEAD')
   update(
-    @Param('id') id: string,
+    @Param('id', ParseIntPipe) id: number,
     @Body() dto: UpdateLeaveRequestDto,
-    @Req() req: { user?: { sub: string; roles?: string[] } },
+    @Req() req: { user?: { sub: number; roles?: string[] } },
   ) {
     return this.leaveService.update(id, dto, req.user);
   }
 
   @Delete(':id')
-  @Roles('COMPANY_ADMIN')
+  @Roles('COMPANY_ADMIN', 'HR_MANAGER')
   remove(
-    @Param('id') id: string,
-    @Req() req: { user?: { sub: string; roles?: string[] } },
+    @Param('id', ParseIntPipe) id: number,
+    @Req() req: { user?: { sub: number; roles?: string[] } },
   ) {
     return this.leaveService.remove(id, req.user);
   }

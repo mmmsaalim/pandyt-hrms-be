@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, ParseIntPipe, Patch, Post, Req, UseGuards } from '@nestjs/common';
 import { RecruitmentService } from './recruitment.service';
 import { CreateCandidateDto } from './dto/create-candidate.dto';
 import { UpdateCandidateDto } from './dto/update-candidate.dto';
@@ -13,7 +13,7 @@ export class RecruitmentController {
 
   @Get()
   @Roles('COMPANY_ADMIN')
-  findAll(@Req() req: { user?: { sub: string; roles?: string[]; tenantId?: string } }) {
+  findAll(@Req() req: { user?: { sub: number; roles?: string[]; tenantId?: number } }) {
     return this.recruitmentService.findAll(req.user);
   }
 
@@ -21,7 +21,7 @@ export class RecruitmentController {
   @Roles('COMPANY_ADMIN')
   create(
     @Body() dto: CreateCandidateDto,
-    @Req() req: { user?: { sub: string; roles?: string[]; tenantId?: string } },
+    @Req() req: { user?: { sub: number; roles?: string[]; tenantId?: number } },
   ) {
     return this.recruitmentService.create(dto, req.user);
   }
@@ -29,9 +29,9 @@ export class RecruitmentController {
   @Patch(':id')
   @Roles('COMPANY_ADMIN')
   update(
-    @Param('id') id: string,
+    @Param('id', ParseIntPipe) id: number,
     @Body() dto: UpdateCandidateDto,
-    @Req() req: { user?: { sub: string; roles?: string[]; tenantId?: string } },
+    @Req() req: { user?: { sub: number; roles?: string[]; tenantId?: number } },
   ) {
     return this.recruitmentService.update(id, dto, req.user);
   }
@@ -39,8 +39,8 @@ export class RecruitmentController {
   @Delete(':id')
   @Roles('COMPANY_ADMIN')
   remove(
-    @Param('id') id: string,
-    @Req() req: { user?: { sub: string; roles?: string[]; tenantId?: string } },
+    @Param('id', ParseIntPipe) id: number,
+    @Req() req: { user?: { sub: number; roles?: string[]; tenantId?: number } },
   ) {
     return this.recruitmentService.remove(id, req.user);
   }

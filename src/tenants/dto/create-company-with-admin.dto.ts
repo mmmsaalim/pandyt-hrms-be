@@ -4,6 +4,10 @@ export class CreateCompanyWithAdminDto {
   @IsString()
   companyName!: string;
 
+  @IsOptional()
+  @IsString()
+  companyCode?: string;
+
   @IsString()
   adminName!: string;
 

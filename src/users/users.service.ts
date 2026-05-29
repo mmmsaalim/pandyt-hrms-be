@@ -12,7 +12,7 @@ export class UsersService {
     return this.prisma.user.findMany({ include: { roles: { include: { role: true } } } });
   }
 
-  findOne(id: string) {
+  findOne(id: number) {
     return this.prisma.user.findUnique({ where: { id }, include: { roles: true } });
   }
 
@@ -29,11 +29,11 @@ export class UsersService {
     });
   }
 
-  update(id: string, dto: UpdateUserDto) {
+  update(id: number, dto: UpdateUserDto) {
     return this.prisma.user.update({ where: { id }, data: dto });
   }
 
-  remove(id: string) {
+  remove(id: number) {
     return this.prisma.user.delete({ where: { id } });
   }
 }

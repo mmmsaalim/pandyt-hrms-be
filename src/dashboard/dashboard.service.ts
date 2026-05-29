@@ -6,21 +6,45 @@ export class DashboardService {
   constructor(private readonly prisma: PrismaService) {}
 
   async superAdminMetrics() {
-    const [tenants, activeTenants, totalEmployees, totalPayrollRuns, totalUsers] = await Promise.all([
+    const [
+      tenants,
+      activeTenants,
+      totalEmployees,
+      totalPayrollRuns,
+      totalUsers,
+      leadPending,
+      leadConverted,
+      leadDeleted,
+    ] = await Promise.all([
       this.prisma.tenant.count(),
       this.prisma.tenant.count({ where: { status: 'ACTIVE' } }),
       this.prisma.employee.count(),
       this.prisma.payrollRun.count(),
       this.prisma.user.count({ where: { status: 'ACTIVE' } }),
+      this.prisma.tenant.count({ where: { leadStatus: 'PENDING' } }),
+      this.prisma.tenant.count({ where: { leadStatus: 'CONVERTED' } }),
+      this.prisma.tenant.count({ where: { leadStatus: 'DELETED' } }),
     ]);
 
     // Calculate platform revenue (mock: $50/tenant/month base + $0.10/employee/month)
     const totalRevenue = tenants * 50 + Math.max(totalEmployees * 0.1, 0);
 
-    return { tenants, activeTenants, totalEmployees, totalPayrollRuns, totalUsers, totalRevenue };
+    return {
+      tenants,
+      activeTenants,
+      totalEmployees,
+      totalPayrollRuns,
+      totalUsers,
+      totalRevenue,
+      leads: {
+        pending: leadPending,
+        converted: leadConverted,
+        deleted: leadDeleted,
+      },
+    };
   }
 
-  private async resolveTenantForCompanyAdmin(userId: string): Promise<string> {
+  private async resolveTenantForCompanyAdmin(userId: number): Promise<number> {
     const employeeProfile = await this.prisma.employee.findUnique({
       where: { userId },
       select: { tenantId: true },
@@ -35,7 +59,7 @@ export class DashboardService {
     return employeeProfile.tenantId;
   }
 
-  async companyAdminMetrics(tenantId: string) {
+  async companyAdminMetrics(tenantId: number) {
     const [employees, leavePending, payrollRuns] = await Promise.all([
       this.prisma.employee.count({ where: { tenantId } }),
       this.prisma.leaveRequest.count({
@@ -51,9 +75,9 @@ export class DashboardService {
   }
 
   async companyAdminMetricsForUser(
-    userId: string,
+    userId: number,
     roles: string[],
-    tenantId?: string,
+    tenantId?: number,
   ) {
     if (roles.includes('SUPER_ADMIN')) {
       if (!tenantId) {
@@ -67,7 +91,7 @@ export class DashboardService {
     return this.companyAdminMetrics(scopedTenantId);
   }
 
-  async employeeMetricsByUser(userId: string) {
+  async employeeMetricsByUser(userId: number) {
     const employee = await this.prisma.employee.findUnique({
       where: { userId },
       select: { id: true },
@@ -80,7 +104,7 @@ export class DashboardService {
     return this.employeeMetrics(employee.id);
   }
 
-  employeeMetrics(employeeId: string) {
+  employeeMetrics(employeeId: number) {
     return this.prisma.employee.findUnique({
       where: { id: employeeId },
       include: {

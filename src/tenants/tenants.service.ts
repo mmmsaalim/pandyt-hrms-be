@@ -1,21 +1,240 @@
-import { Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
-import { randomBytes } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateTenantDto } from './dto/create-tenant.dto';
 import { UpdateTenantDto } from './dto/update-tenant.dto';
+import { TenantLeadStatusEnum } from './dto/create-tenant.dto';
 import { CreateCompanyWithAdminDto } from './dto/create-company-with-admin.dto';
-import { InvitationsService } from '../invitations/invitations.service';
+
+type TxClient = Prisma.TransactionClient;
 
 @Injectable()
 export class TenantsService {
-  constructor(
-    private readonly prisma: PrismaService,
-    private readonly invitationsService: InvitationsService,
-  ) {}
+  constructor(private readonly prisma: PrismaService) {}
 
-  findAll() {
-    return this.prisma.tenant.findMany();
+  private normalizeCompanyCode(raw: string): string {
+    return raw
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9-]/g, '-')
+      .replace(/-+/g, '-')
+      .replace(/^-+|-+$/g, '');
+  }
+
+  private buildCompanyCodeBase(name: string): string {
+    const normalized = this.normalizeCompanyCode(name);
+    return normalized || 'tenant';
+  }
+
+  private async resolveCompanyCode(
+    preferred: string | undefined,
+    companyName: string,
+    excludeTenantId?: number,
+  ): Promise<string> {
+    const baseCandidate = preferred?.trim()
+      ? this.normalizeCompanyCode(preferred)
+      : this.buildCompanyCodeBase(companyName);
+
+    if (!baseCandidate) {
+      throw new BadRequestException('companyCode is invalid.');
+    }
+
+    for (let suffix = 0; suffix < 500; suffix += 1) {
+      const candidate = suffix === 0 ? baseCandidate : `${baseCandidate}-${suffix + 1}`;
+
+      const existing = await this.prisma.tenant.findFirst({
+        where: {
+          companyCode: candidate,
+          ...(excludeTenantId ? { id: { not: excludeTenantId } } : {}),
+        },
+        select: { id: true },
+      });
+
+      if (!existing) {
+        return candidate;
+      }
+    }
+
+    throw new BadRequestException('Unable to allocate a unique companyCode.');
+  }
+
+  private buildAdminEmployeeCode(tenantId: number, userId: number): string {
+    return `TEN${tenantId}-ADM-${String(userId).padStart(4, '0')}`;
+  }
+
+  private async ensureCompanyAdminEmployeeProfile(
+    tx: TxClient,
+    tenantId: number,
+    user: { id: number; firstName: string; lastName: string },
+  ) {
+    const employeeCode = this.buildAdminEmployeeCode(tenantId, user.id);
+
+    await tx.employee.upsert({
+      where: { userId: user.id },
+      update: {
+        tenantId,
+        employeeCode,
+        department: 'Administration',
+        designation: 'Company Admin',
+        employmentStatus: 'ACTIVE',
+      },
+      create: {
+        tenantId,
+        userId: user.id,
+        employeeCode,
+        department: 'Administration',
+        designation: 'Company Admin',
+        joinedDate: new Date(),
+        employmentStatus: 'ACTIVE',
+      },
+    });
+  }
+
+  private async ensureBusinessModuleAccess(
+    tx: TxClient,
+    tenantId: number,
+    userId: number,
+  ) {
+    const permissions = await tx.permission.findMany({
+      where: {
+        NOT: [{ module: 'configuration' }, { module: 'tenants' }],
+      },
+      orderBy: [{ module: 'asc' }, { permission: 'asc' }],
+    });
+
+    const grouped = new Map<string, number[]>();
+    for (const permission of permissions) {
+      grouped.set(permission.module, [...(grouped.get(permission.module) ?? []), permission.id]);
+    }
+
+    for (const [module, permissionIds] of grouped.entries()) {
+      const roleName = module.toUpperCase();
+      const existingRole = await tx.role.findFirst({
+        where: { tenantId, name: roleName },
+        select: { id: true },
+      });
+
+      const role =
+        existingRole ??
+        (await tx.role.create({
+          data: {
+            tenantId,
+            name: roleName,
+            description: `${module} module access role`,
+          },
+          select: { id: true },
+        }));
+
+      await tx.rolePermission.deleteMany({ where: { roleId: role.id } });
+      if (permissionIds.length > 0) {
+        await tx.rolePermission.createMany({
+          data: permissionIds.map((permissionId) => ({
+            roleId: role.id,
+            permissionId,
+          })),
+        });
+      }
+
+      await tx.userRole.upsert({
+        where: {
+          userId_roleId: {
+            userId,
+            roleId: role.id,
+          },
+        },
+        update: {},
+        create: {
+          userId,
+          roleId: role.id,
+        },
+      });
+    }
+  }
+
+  async findAll() {
+    const rows = await this.prisma.tenant.findMany({
+      orderBy: { createdAt: 'desc' },
+      include: {
+        _count: {
+          select: {
+            users: true,
+          },
+        },
+        users: {
+          where: {
+            roles: {
+              some: {
+                role: {
+                  name: 'COMPANY_ADMIN',
+                },
+              },
+            },
+          },
+          orderBy: { createdAt: 'asc' },
+          select: {
+            id: true,
+            email: true,
+            status: true,
+            firstName: true,
+            lastName: true,
+          },
+        },
+      },
+    });
+
+    return rows.map((row) => ({
+      id: row.id,
+      name: row.name,
+      companyCode: row.companyCode,
+      plan: row.plan,
+      status: row.status,
+      leadStatus: row.leadStatus,
+      seats: row.seats,
+      createdAt: row.createdAt,
+      usersCount: row._count.users,
+      companyAdmin: row.users[0] ?? null,
+    }));
+  }
+
+  async findLeads(status?: TenantLeadStatusEnum) {
+    const rows = await this.prisma.tenant.findMany({
+      where: status ? { leadStatus: status } : undefined,
+      orderBy: { createdAt: 'desc' },
+      include: {
+        invitations: {
+          where: { role: 'COMPANY_ADMIN' },
+          orderBy: { invitedAt: 'desc' },
+          select: {
+            id: true,
+            status: true,
+            invitedAt: true,
+            acceptedAt: true,
+            expiresAt: true,
+          },
+        },
+      },
+    });
+
+    return rows.map((row) => {
+      const latestAdminInvitation = row.invitations[0] ?? null;
+      const pendingAdminInvitations = row.invitations.filter(
+        (invitation) => invitation.status === 'PENDING',
+      ).length;
+
+      return {
+        id: row.id,
+        name: row.name,
+        companyCode: row.companyCode,
+        plan: row.plan,
+        status: row.status,
+        leadStatus: row.leadStatus,
+        seats: row.seats,
+        createdAt: row.createdAt,
+        latestAdminInvitation,
+        pendingAdminInvitations,
+      };
+    });
   }
 
   async paymentsOverview() {
@@ -45,6 +264,7 @@ export class TenantsService {
       return {
         tenantId: tenant.id,
         companyName: tenant.name,
+        companyCode: tenant.companyCode,
         plan: normalizedPlan,
         status: tenant.status,
         billingStatus:
@@ -92,22 +312,32 @@ export class TenantsService {
     return next;
   }
 
-  findOne(id: string) {
+  findOne(id: number) {
     return this.prisma.tenant.findUnique({ where: { id } });
   }
 
-  create(dto: CreateTenantDto) {
-    return this.prisma.tenant.create({ data: dto });
+  async create(dto: CreateTenantDto) {
+    const companyCode = await this.resolveCompanyCode(dto.companyCode, dto.name);
+
+    return this.prisma.tenant.create({
+      data: {
+        ...dto,
+        companyCode,
+      },
+    });
   }
 
   async createCompanyWithAdminInvite(dto: CreateCompanyWithAdminDto) {
     const [firstName, ...lastNameParts] = dto.adminName.trim().split(/\s+/);
     const lastName = lastNameParts.join(' ') || 'Admin';
-    const pendingPassword = randomBytes(48).toString('hex');
-    const pendingPasswordHash = await bcrypt.hash(pendingPassword, 10);
+    const temporaryPassword = 'admin@123';
+    const pendingPasswordHash = await bcrypt.hash(temporaryPassword, 10);
 
-    const companyAdminRole = await this.prisma.role.findUnique({
-      where: { name: 'COMPANY_ADMIN' },
+    const companyAdminRole = await this.prisma.role.findFirst({
+      where: {
+        name: 'COMPANY_ADMIN',
+        tenantId: null,
+      },
       select: { id: true },
     });
 
@@ -115,12 +345,16 @@ export class TenantsService {
       throw new Error('COMPANY_ADMIN role is not configured.');
     }
 
+    const companyCode = await this.resolveCompanyCode(dto.companyCode, dto.companyName);
+
     const result = await this.prisma.$transaction(async (tx) => {
       const tenant = await tx.tenant.create({
         data: {
           name: dto.companyName,
+          companyCode,
           plan: dto.subscriptionPlan,
-          status: 'ACTIVE',
+          status: 'SUSPENDED',
+          leadStatus: 'PENDING',
           seats: dto.seats ?? 25,
         },
       });
@@ -143,16 +377,14 @@ export class TenantsService {
         },
       });
 
-      return { tenant, user };
-    });
+      await this.ensureBusinessModuleAccess(tx, tenant.id, user.id);
+      await this.ensureCompanyAdminEmployeeProfile(tx, tenant.id, {
+        id: user.id,
+        firstName: user.firstName,
+        lastName: user.lastName,
+      });
 
-    const invitation = await this.invitationsService.createAndSendInvitation({
-      tenantId: result.tenant.id,
-      userId: result.user.id,
-      email: result.user.email,
-      role: 'COMPANY_ADMIN',
-      fullName: dto.adminName,
-      companyName: result.tenant.name,
+      return { tenant, user };
     });
 
     return {
@@ -162,15 +394,109 @@ export class TenantsService {
         email: result.user.email,
         status: result.user.status,
       },
-      invitation,
+      temporaryPassword,
+      requiresApproval: true,
     };
   }
 
-  update(id: string, dto: UpdateTenantDto) {
-    return this.prisma.tenant.update({ where: { id }, data: dto });
+  async approve(id: number) {
+    const temporaryPassword = 'admin@123';
+    const temporaryPasswordHash = await bcrypt.hash(temporaryPassword, 10);
+
+    return this.prisma.$transaction(async (tx) => {
+      const tenant = await tx.tenant.update({
+        where: { id },
+        data: {
+          status: 'ACTIVE',
+          leadStatus: 'CONVERTED',
+        },
+      });
+
+      const adminUsers = await tx.user.findMany({
+        where: {
+          tenantId: id,
+          roles: {
+            some: {
+              role: {
+                name: 'COMPANY_ADMIN',
+              },
+            },
+          },
+        },
+        select: {
+          id: true,
+          email: true,
+          status: true,
+          firstName: true,
+          lastName: true,
+        },
+      });
+
+      if (adminUsers.length > 0) {
+        await tx.user.updateMany({
+          where: {
+            id: { in: adminUsers.map((user) => user.id) },
+            status: { not: 'INACTIVE' },
+          },
+          data: {
+            status: 'ACTIVE',
+            passwordHash: temporaryPasswordHash,
+          },
+        });
+
+        for (const admin of adminUsers) {
+          await this.ensureBusinessModuleAccess(tx, id, admin.id);
+          await this.ensureCompanyAdminEmployeeProfile(tx, id, {
+            id: admin.id,
+            firstName: admin.firstName,
+            lastName: admin.lastName,
+          });
+        }
+      }
+
+      return {
+        tenant,
+        temporaryPassword,
+        approvedAdmins: adminUsers.map((admin) => ({
+          id: admin.id,
+          email: admin.email,
+        })),
+      };
+    });
   }
 
-  remove(id: string) {
-    return this.prisma.tenant.delete({ where: { id } });
+  async update(id: number, dto: UpdateTenantDto) {
+    let companyCode = dto.companyCode;
+
+    if (dto.companyCode || dto.name) {
+      const tenant = await this.prisma.tenant.findUnique({
+        where: { id },
+        select: { name: true },
+      });
+
+      if (!tenant) {
+        throw new BadRequestException('Tenant not found.');
+      }
+
+      companyCode = await this.resolveCompanyCode(dto.companyCode, dto.name ?? tenant.name, id);
+    }
+
+    return this.prisma.tenant.update({
+      where: { id },
+      data: {
+        ...dto,
+        ...(companyCode ? { companyCode } : {}),
+      },
+    });
+  }
+
+  remove(id: number) {
+    return this.prisma.tenant.update({
+      where: { id },
+      data: {
+        status: 'SUSPENDED',
+        leadStatus: 'DELETED',
+      },
+    });
   }
 }
