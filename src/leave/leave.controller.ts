@@ -64,7 +64,7 @@ export class LeaveController {
   }
 
   @Post()
-  @Roles('COMPANY_ADMIN', 'EMPLOYEE')
+  @Roles('COMPANY_ADMIN', 'HR_MANAGER', 'TEAM_LEAD', 'EMPLOYEE')
   create(
     @Body() dto: CreateLeaveRequestDto,
     @Req() req: { user?: { sub: number; roles?: string[] } },

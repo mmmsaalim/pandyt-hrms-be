@@ -14,7 +14,7 @@ export class EmployeesController {
   constructor(private readonly employeesService: EmployeesService) {}
 
   @Get()
-  @Roles('COMPANY_ADMIN')
+  @Roles('COMPANY_ADMIN', 'HR_MANAGER')
   findAll(@Req() req: { user?: { sub: number; roles?: string[] } }) {
     return this.employeesService.findAll(req.user);
   }
@@ -38,7 +38,7 @@ export class EmployeesController {
   }
 
   @Post('invite')
-    @Roles('COMPANY_ADMIN', 'HR_MANAGER')
+  @Roles('COMPANY_ADMIN', 'HR_MANAGER')
   inviteEmployee(
     @Body() dto: InviteEmployeeDto,
     @Req() req: { user?: { sub: number; roles?: string[] } },

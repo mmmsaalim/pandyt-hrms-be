@@ -10,7 +10,7 @@ export class ReportsController {
   constructor(private readonly reportsService: ReportsService) {}
 
   @Get('summary')
-  @Roles('COMPANY_ADMIN')
+  @Roles('COMPANY_ADMIN', 'HR_MANAGER')
   summary(@Req() req: { user?: { sub: number; roles?: string[]; tenantId?: number } }) {
     return this.reportsService.summary(req.user);
   }

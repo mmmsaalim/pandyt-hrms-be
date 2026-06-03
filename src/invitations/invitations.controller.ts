@@ -24,14 +24,14 @@ export class InvitationsController {
 
   // Protected endpoints
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('SUPER_ADMIN', 'COMPANY_ADMIN')
+  @Roles('SUPER_ADMIN', 'COMPANY_ADMIN', 'HR_MANAGER')
   @Get()
   list(@Req() req: { user?: { sub: number; roles?: string[]; tenantId?: number } }) {
     return this.invitationsService.listInvitations(req.user!);
   }
 
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('SUPER_ADMIN', 'COMPANY_ADMIN')
+  @Roles('SUPER_ADMIN', 'COMPANY_ADMIN', 'HR_MANAGER')
   @Post('resend')
   resend(
     @Body() dto: ResendInvitationDto,

@@ -23,7 +23,7 @@ export class AttendanceController {
   constructor(private readonly attendanceService: AttendanceService) {}
 
   @Get()
-  @Roles('COMPANY_ADMIN', 'EMPLOYEE')
+  @Roles('COMPANY_ADMIN', 'HR_MANAGER', 'EMPLOYEE')
   findAll(@Req() req: { user?: { sub: number; roles?: string[] } }) {
     return this.attendanceService.findAll(req.user);
   }

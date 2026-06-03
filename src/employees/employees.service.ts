@@ -210,30 +210,24 @@ export class EmployeesService {
       throw new ForbiddenException('Employee profile not found for this user.');
     }
 
-    // Only COMPANY_ADMIN can invite users
-    if (!this.hasRole(user, 'COMPANY_ADMIN')) {
-        throw new ForbiddenException('Only COMPANY_ADMIN or HR_MANAGER can invite users.');
-      }
+    const isCompanyAdmin = this.hasRole(user, 'COMPANY_ADMIN');
+    const isHRManager = this.hasRole(user, 'HR_MANAGER');
 
-      // COMPANY_ADMIN can create any role, HR_MANAGER can only create HR_MANAGER, TEAM_LEAD, EMPLOYEE
-      if (this.hasRole(user, 'HR_MANAGER')) {
-        const restrictedRoles = ['HR_MANAGER', 'TEAM_LEAD', 'EMPLOYEE'];
-        if (!restrictedRoles.includes(dto.role)) {
-          throw new ForbiddenException('HR_MANAGER can only create HR_MANAGER, TEAM_LEAD, or EMPLOYEE roles.');
-        }
+    if (!isCompanyAdmin && !isHRManager) {
+      throw new ForbiddenException('Only COMPANY_ADMIN or HR_MANAGER can invite users.');
     }
-    
-      // Authorization: COMPANY_ADMIN or HR_MANAGER can invite
-      const isCompanyAdmin = this.hasRole(user, 'COMPANY_ADMIN');
-      const isHRManager = this.hasRole(user, 'HR_MANAGER');
-      if (!isCompanyAdmin && !isHRManager) {
-        throw new ForbiddenException('Only COMPANY_ADMIN or HR_MANAGER can invite users.');
+
+    // HR manager is restricted to operational roles inside tenant.
+    if (isHRManager) {
+      const restrictedRoles = ['HR_MANAGER', 'TEAM_LEAD', 'EMPLOYEE'];
+      if (!restrictedRoles.includes(dto.role)) {
+        throw new ForbiddenException('HR_MANAGER can only create HR_MANAGER, TEAM_LEAD, or EMPLOYEE roles.');
       }
-    
-      // Restrict HR_MANAGER from creating COMPANY_ADMIN
-      if (isHRManager && dto.role === 'COMPANY_ADMIN') {
-        throw new ForbiddenException('Only COMPANY_ADMIN can create COMPANY_ADMIN role.');
-      }
+    }
+
+    if (isHRManager && dto.role === 'COMPANY_ADMIN') {
+      throw new ForbiddenException('Only COMPANY_ADMIN can create COMPANY_ADMIN role.');
+    }
 
     // Validate requested role
     const validRoles = ['EMPLOYEE', 'HR_MANAGER', 'TEAM_LEAD', 'COMPANY_ADMIN'];

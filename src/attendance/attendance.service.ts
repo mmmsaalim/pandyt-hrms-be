@@ -37,7 +37,7 @@ export class AttendanceService {
       });
     }
 
-    if (this.hasRole(user, 'COMPANY_ADMIN')) {
+    if (this.hasRole(user, 'COMPANY_ADMIN') || this.hasRole(user, 'HR_MANAGER')) {
       return this.prisma.attendance.findMany({
         where: { employee: { tenantId: employeeContext.tenantId } },
         include: { employee: true },
