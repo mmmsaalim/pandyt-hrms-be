@@ -1,10 +1,10 @@
 import { Module } from '@nestjs/common';
 import { InvitationsController } from './invitations.controller';
 import { InvitationsService } from './invitations.service';
-import { NotificationsModule } from '../notifications/notifications.module';
+import { EmailModule } from '../email/email.module';
 
 @Module({
-  imports: [NotificationsModule],
+  imports: [EmailModule],
   controllers: [InvitationsController],
   providers: [InvitationsService],
   exports: [InvitationsService],

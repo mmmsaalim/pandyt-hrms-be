@@ -15,7 +15,7 @@ import { ReportsModule } from './reports/reports.module';
 import { DashboardModule } from './dashboard/dashboard.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { InvitationsModule } from './invitations/invitations.module';
-import { NotificationsModule } from './notifications/notifications.module';
+import { EmailModule } from './email/email.module';
 import { OrganisationModule } from './organisation/organisation.module';
 
 @Module({
@@ -35,7 +35,7 @@ import { OrganisationModule } from './organisation/organisation.module';
     RecruitmentModule,
     ReportsModule,
     DashboardModule,
-    NotificationsModule,
+    EmailModule,
     InvitationsModule,
     OrganisationModule,
   ],

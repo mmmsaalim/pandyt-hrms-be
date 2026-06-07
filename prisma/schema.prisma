@@ -69,6 +69,7 @@ model User {
   roles        UserRole[]
   employee     Employee?
   invitations  Invitation[]
+  passwordResetTokens PasswordResetToken[]
 }
 
 model Role {
@@ -324,4 +325,17 @@ model LeaveBalance {
   leavePolicy   LeavePolicy @relation(fields: [leavePolicyId], references: [id], onDelete: Cascade)
 
   @@unique([employeeId, leavePolicyId])
+}
+
+model PasswordResetToken {
+  id        Int      @id @default(autoincrement())
+  userId    Int
+  tokenHash String   @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("password_reset_tokens")
 }

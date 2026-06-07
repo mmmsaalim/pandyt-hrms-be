@@ -3,7 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import * as bcrypt from 'bcrypt';
 import { createHash, randomBytes } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
-import { EmailService } from '../notifications/email.service';
+import { EmailService } from '../email/email.service';
 
 type CreateInvitationInput = {
   tenantId: number;
@@ -111,7 +111,10 @@ export class InvitationsService {
     const hashedToken = this.tokenHash(token);
     const invitation = await this.prisma.invitation.findUnique({
       where: { tokenHash: hashedToken },
-      include: { user: true },
+      include: {
+        user: true,
+        tenant: { select: { name: true } },
+      },
     });
 
     if (!invitation) {
@@ -131,6 +134,7 @@ export class InvitationsService {
     }
 
     const passwordHash = await bcrypt.hash(password, 10);
+    const appUrl = this.config.get<string>('APP_URL', 'http://localhost:4200');
 
     await this.prisma.$transaction(async (tx) => {
       await tx.user.update({
@@ -160,6 +164,18 @@ export class InvitationsService {
         });
       }
     });
+
+    try {
+      await this.emailService.sendAccountActivationEmail({
+        to: invitation.user.email,
+        fullName: `${invitation.user.firstName} ${invitation.user.lastName}`.trim(),
+        companyName: invitation.tenant?.name ?? 'FlowHR',
+        loginUrl: `${appUrl}/login`,
+        supportEmail: this.config.get<string>('MAIL_SUPPORT_EMAIL') ?? undefined,
+      });
+    } catch {
+      // Activation email should not block account activation.
+    }
 
     return { message: 'Account activated successfully. Please log in.' };
   }

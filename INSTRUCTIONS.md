@@ -87,9 +87,20 @@ Required env:
 - `JWT_SECRET`
 - `APP_URL`
 - `INVITATION_EXPIRY_HOURS`
+- `PASSWORD_RESET_EXPIRY_HOURS`
+- `EMAIL_PROVIDER` (`auto`, `smtp`, `resend`, `brevo`)
+- `EMAIL_FAIL_FAST` (`false` for local testing to avoid 502 on provider throttling)
+- `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` (for Mailtrap or SMTP provider)
+- `RESEND_API_KEY` (optional)
 - `BREVO_API_KEY` (optional)
-- `MAIL_FROM` (optional)
+- `MAIL_FROM` or `EMAIL_FROM` (optional)
 - `MAIL_FROM_NAME` (optional)
+- `MAIL_SUPPORT_EMAIL` (optional)
+
+Local email testing notes:
+- Mailtrap sandbox captures emails in Mailtrap inbox and does not deliver to real Gmail/phone inbox.
+- Mailtrap free testing plans may return `550 5.7.0 Too many emails per second` when invitations are sent in bursts.
+- With `EMAIL_FAIL_FAST=false`, email send failures are logged as warnings and API requests continue without `502`.
 
 Dev commands:
 - `yarn prisma:generate`
@@ -97,6 +108,10 @@ Dev commands:
 - `yarn prisma:seed`
 - `yarn start:dev`
 - `yarn build`
+
+Email flow endpoints:
+- `POST /api/auth/password/reset/request`
+- `POST /api/auth/password/reset/confirm`
 
 ## 9) Quick Verification Checklist
 - Login tenant user without `companyCode` fails

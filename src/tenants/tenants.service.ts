@@ -1,6 +1,9 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { Prisma } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
+import { createHash, randomBytes } from 'crypto';
+import { EmailService } from '../email/email.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateTenantDto } from './dto/create-tenant.dto';
 import { UpdateTenantDto } from './dto/update-tenant.dto';
@@ -11,7 +14,13 @@ type TxClient = Prisma.TransactionClient;
 
 @Injectable()
 export class TenantsService {
-  constructor(private readonly prisma: PrismaService) {}
+  private readonly logger = new Logger(TenantsService.name);
+
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly config: ConfigService,
+    private readonly emailService: EmailService,
+  ) {}
 
   private normalizeCompanyCode(raw: string): string {
     return raw
@@ -25,6 +34,45 @@ export class TenantsService {
   private buildCompanyCodeBase(name: string): string {
     const normalized = this.normalizeCompanyCode(name);
     return normalized || 'tenant';
+  }
+
+  private tokenHash(token: string): string {
+    return createHash('sha256').update(token).digest('hex');
+  }
+
+  private appUrl(): string {
+    return this.config.get<string>('APP_URL', 'http://localhost:4200');
+  }
+
+  private loginUrl(): string {
+    return `${this.appUrl()}/login`;
+  }
+
+  private onboardingUrl(token: string): string {
+    return `${this.appUrl()}/reset-password?token=${token}`;
+  }
+
+  private resetExpiryHours(): number {
+    return Number(this.config.get<string>('PASSWORD_RESET_EXPIRY_HOURS', '24'));
+  }
+
+  private async createPasswordSetupToken(userId: number): Promise<{ token: string; expiresAt: Date }> {
+    const token = randomBytes(32).toString('hex');
+    const expiresAt = new Date(Date.now() + this.resetExpiryHours() * 60 * 60 * 1000);
+
+    await this.prisma.passwordResetToken.deleteMany({
+      where: { userId, usedAt: null },
+    });
+
+    await this.prisma.passwordResetToken.create({
+      data: {
+        userId,
+        tokenHash: this.tokenHash(token),
+        expiresAt,
+      },
+    });
+
+    return { token, expiresAt };
   }
 
   private async resolveCompanyCode(
@@ -328,10 +376,20 @@ export class TenantsService {
   }
 
   async createCompanyWithAdminInvite(dto: CreateCompanyWithAdminDto) {
+    const normalizedEmail = dto.adminEmail.trim().toLowerCase();
+
+    const existingUser = await this.prisma.user.findUnique({
+      where: { email: normalizedEmail },
+      select: { id: true },
+    });
+
+    if (existingUser) {
+      throw new ConflictException('A user with this admin email address already exists.');
+    }
+
     const [firstName, ...lastNameParts] = dto.adminName.trim().split(/\s+/);
     const lastName = lastNameParts.join(' ') || 'Admin';
-    const temporaryPassword = 'admin@123';
-    const pendingPasswordHash = await bcrypt.hash(temporaryPassword, 10);
+    const pendingPasswordHash = await bcrypt.hash(randomBytes(12).toString('hex'), 10);
 
     const companyAdminRole = await this.prisma.role.findFirst({
       where: {
@@ -361,7 +419,7 @@ export class TenantsService {
 
       const user = await tx.user.create({
         data: {
-          email: dto.adminEmail,
+          email: normalizedEmail,
           passwordHash: pendingPasswordHash,
           firstName: firstName || 'Company',
           lastName,
@@ -387,6 +445,16 @@ export class TenantsService {
       return { tenant, user };
     });
 
+    const setupToken = await this.createPasswordSetupToken(result.user.id);
+
+    await this.emailService.sendOnboardingEmail({
+      to: result.user.email,
+      fullName: `${result.user.firstName} ${result.user.lastName}`.trim(),
+      companyName: result.tenant.name,
+      activationUrl: this.onboardingUrl(setupToken.token),
+      loginUrl: this.loginUrl(),
+    });
+
     return {
       tenant: result.tenant,
       adminUser: {
@@ -394,16 +462,13 @@ export class TenantsService {
         email: result.user.email,
         status: result.user.status,
       },
-      temporaryPassword,
+      onboardingUrl: this.onboardingUrl(setupToken.token),
       requiresApproval: true,
     };
   }
 
   async approve(id: number) {
-    const temporaryPassword = 'admin@123';
-    const temporaryPasswordHash = await bcrypt.hash(temporaryPassword, 10);
-
-    return this.prisma.$transaction(async (tx) => {
+    const result = await this.prisma.$transaction(async (tx) => {
       const tenant = await tx.tenant.update({
         where: { id },
         data: {
@@ -433,6 +498,8 @@ export class TenantsService {
       });
 
       if (adminUsers.length > 0) {
+        const adminActivationRecipients: Array<{ email: string; fullName: string }> = [];
+
         await tx.user.updateMany({
           where: {
             id: { in: adminUsers.map((user) => user.id) },
@@ -440,7 +507,6 @@ export class TenantsService {
           },
           data: {
             status: 'ACTIVE',
-            passwordHash: temporaryPasswordHash,
           },
         });
 
@@ -451,18 +517,50 @@ export class TenantsService {
             firstName: admin.firstName,
             lastName: admin.lastName,
           });
+
+          adminActivationRecipients.push({
+            email: admin.email,
+            fullName: `${admin.firstName} ${admin.lastName}`.trim(),
+          });
         }
+
+        return { tenant, adminActivationRecipients, adminUsers };
       }
 
       return {
         tenant,
-        temporaryPassword,
+        adminActivationRecipients: [] as Array<{ email: string; fullName: string }>,
+        adminUsers,
         approvedAdmins: adminUsers.map((admin) => ({
           id: admin.id,
           email: admin.email,
         })),
       };
     });
+
+    for (const admin of result.adminActivationRecipients) {
+      try {
+        await this.emailService.sendAccountActivationEmail({
+          to: admin.email,
+          fullName: admin.fullName,
+          companyName: result.tenant.name,
+          loginUrl: this.loginUrl(),
+          supportEmail: this.config.get<string>('MAIL_SUPPORT_EMAIL') ?? undefined,
+        });
+      } catch (error) {
+        this.logger.warn(
+          `Activation email could not be sent to ${admin.email}: ${error instanceof Error ? error.message : 'unknown error'}`,
+        );
+      }
+    }
+
+    return {
+      tenant: result.tenant,
+      approvedAdmins: result.adminUsers.map((admin) => ({
+        id: admin.id,
+        email: admin.email,
+      })),
+    };
   }
 
   async update(id: number, dto: UpdateTenantDto) {

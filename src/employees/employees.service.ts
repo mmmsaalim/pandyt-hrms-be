@@ -235,6 +235,17 @@ export class EmployeesService {
       throw new ForbiddenException(`Invalid role: ${dto.role}`);
     }
 
+    const normalizedEmail = dto.workEmail.trim().toLowerCase();
+
+    const existingUser = await this.prisma.user.findUnique({
+      where: { email: normalizedEmail },
+      select: { id: true },
+    });
+
+    if (existingUser) {
+      throw new ConflictException('A user with this work email address already exists.');
+    }
+
     const requestedRole = dto.role;
 
     const role = await this.prisma.role.findFirst({
@@ -276,7 +287,7 @@ export class EmployeesService {
     const result = await this.prisma.$transaction(async (tx) => {
       const createdUser = await tx.user.create({
         data: {
-          email: dto.workEmail,
+          email: normalizedEmail,
           passwordHash: temporaryPasswordHash,
           firstName: firstName || 'Employee',
           lastName,
