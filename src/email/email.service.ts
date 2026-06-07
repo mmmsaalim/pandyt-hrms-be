@@ -57,11 +57,11 @@ export class EmailService {
   private fromEmail(): string {
     return this.config.get<string>('MAIL_FROM')
       ?? this.config.get<string>('EMAIL_FROM')
-      ?? 'no-reply@flowhr.local';
+      ?? 'no-reply@pandyt.local';
   }
 
   private fromName(): string {
-    return this.config.get<string>('MAIL_FROM_NAME', 'FlowHR');
+    return this.config.get<string>('MAIL_FROM_NAME', 'Pandyt HR Cloud');
   }
 
   private configuredProvider(): EmailProviderName | 'auto' {

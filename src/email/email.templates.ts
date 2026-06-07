@@ -5,19 +5,19 @@ import {
   SendPasswordResetEmailInput,
 } from './email.types';
 
-const brand = 'FlowHR';
+const brand = 'Pandyt HR Cloud';
 
 function baseLayout(title: string, body: string): string {
   return `
-    <div style="margin:0;background:#0f172a;padding:32px 16px;font-family:Arial,sans-serif;color:#0f172a;">
-      <div style="max-width:640px;margin:0 auto;background:#ffffff;border-radius:18px;overflow:hidden;border:1px solid #e5e7eb;box-shadow:0 18px 50px rgba(15,23,42,0.18);">
-        <div style="padding:28px 32px;background:linear-gradient(135deg,#0f172a,#1d4ed8);color:#ffffff;">
-          <div style="font-size:12px;letter-spacing:0.14em;text-transform:uppercase;opacity:0.8;">${brand}</div>
+    <div style="margin:0;background:#fff4eb;padding:32px 16px;font-family:Arial,sans-serif;color:#2a2623;">
+      <div style="max-width:640px;margin:0 auto;background:#ffffff;border-radius:18px;overflow:hidden;border:1px solid #f1d9c6;box-shadow:0 18px 48px rgba(92,48,16,0.16);">
+        <div style="padding:28px 32px;background:linear-gradient(135deg,#f89a55,#f47421);color:#ffffff;">
+          <div style="font-size:12px;letter-spacing:0.2em;text-transform:uppercase;opacity:0.9;">PANDYT</div>
           <h1 style="margin:10px 0 0;font-size:28px;line-height:1.2;">${title}</h1>
         </div>
-        <div style="padding:32px;line-height:1.7;font-size:15px;color:#334155;">${body}</div>
-        <div style="padding:20px 32px;border-top:1px solid #e5e7eb;font-size:12px;color:#64748b;">
-          You received this message because your account is managed by ${brand}. If you did not expect it, contact support.
+        <div style="padding:32px;line-height:1.7;font-size:15px;color:#4d3c30;">${body}</div>
+        <div style="padding:20px 32px;border-top:1px solid #f3e3d8;font-size:12px;color:#8f7563;">
+          You received this message because your account is managed by Pandyt services. If you did not expect it, contact support.
         </div>
       </div>
     </div>
@@ -26,7 +26,7 @@ function baseLayout(title: string, body: string): string {
 
 function button(url: string, label: string): string {
   return `
-    <a href="${url}" style="display:inline-block;padding:14px 22px;border-radius:12px;background:#0f172a;color:#ffffff;text-decoration:none;font-weight:700;">
+    <a href="${url}" style="display:inline-block;padding:14px 22px;border-radius:12px;background:linear-gradient(135deg,#f89a55,#f47421);color:#ffffff;text-decoration:none;font-weight:700;">
       ${label}
     </a>
   `;
@@ -81,12 +81,12 @@ export function buildInvitationEmail(input: SendInvitationEmailInput) {
 }
 
 export function buildPasswordResetEmail(input: SendPasswordResetEmailInput) {
-  const subject = `Reset your ${brand} password`;
+  const subject = 'Reset your Pandyt password';
   const html = baseLayout(
     subject,
     `
       <p style="margin:0 0 16px;">Hello ${input.fullName},</p>
-      <p style="margin:0 0 16px;">We received a request to reset your password. Use the button below to choose a new password.</p>
+      <p style="margin:0 0 16px;">We received a request to reset your password for your Pandyt company workspace. Use the button below to choose a new password.</p>
       <div style="margin:24px 0;">${button(input.resetUrl, 'Reset password')}</div>
       <p style="margin:0 0 8px;">This link expires in ${input.expiresHours} hours.</p>
       <p style="margin:0;word-break:break-all;"><a href="${input.resetUrl}">${input.resetUrl}</a></p>
