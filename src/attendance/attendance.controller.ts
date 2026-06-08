@@ -41,7 +41,7 @@ export class AttendanceController {
   }
 
   @Post('override')
-  @Roles('COMPANY_ADMIN')
+  @Roles('COMPANY_ADMIN', 'HR_MANAGER')
   override(
     @Body()
     dto: {
@@ -66,7 +66,7 @@ export class AttendanceController {
   }
 
   @Patch(':id')
-  @Roles('COMPANY_ADMIN')
+  @Roles('COMPANY_ADMIN', 'HR_MANAGER')
   update(
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: UpdateAttendanceDto,
@@ -76,7 +76,7 @@ export class AttendanceController {
   }
 
   @Delete(':id')
-  @Roles('COMPANY_ADMIN')
+  @Roles('COMPANY_ADMIN', 'HR_MANAGER')
   remove(
     @Param('id', ParseIntPipe) id: number,
     @Req() req: { user?: { sub: number; roles?: string[] } },

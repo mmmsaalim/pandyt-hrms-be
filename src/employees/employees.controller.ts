@@ -57,7 +57,7 @@ export class EmployeesController {
   }
 
   @Delete(':id')
-  @Roles('COMPANY_ADMIN')
+  @Roles('COMPANY_ADMIN', 'SUPER_ADMIN')
   remove(
     @Param('id', ParseIntPipe) id: number,
     @Req() req: { user?: { sub: number; roles?: string[] } },

@@ -1,7 +1,9 @@
 import {
   SendAccountActivationEmailInput,
+  SendBillingReminderEmailInput,
   SendInvitationEmailInput,
   SendOnboardingEmailInput,
+  SendOverduePaymentReminderEmailInput,
   SendPasswordResetEmailInput,
 } from './email.types';
 
@@ -120,6 +122,82 @@ export function buildAccountActivationEmail(input: SendAccountActivationEmailInp
     `Hello ${input.fullName},`,
     `Your account for ${input.companyName} is now active.`,
     `Login: ${input.loginUrl}`,
+  ].join('\n\n');
+
+  return { subject, html, text };
+}
+
+export function buildOverduePaymentReminderEmail(input: SendOverduePaymentReminderEmailInput) {
+  const amount = `LKR ${Math.round(input.totalDueLkr).toLocaleString('en-US')}`;
+  const subject = `Payment reminder: ${input.companyName} account is overdue`;
+  const html = baseLayout(
+    subject,
+    `
+      <p style="margin:0 0 16px;">Hello ${input.fullName},</p>
+      <p style="margin:0 0 16px;">Your company workspace <strong>${input.companyName}</strong> currently has an overdue payment.</p>
+      <p style="margin:0 0 8px;"><strong>Amount due:</strong> ${amount}</p>
+      <p style="margin:0 0 16px;"><strong>Renewal date:</strong> ${input.renewalDate}</p>
+      <div style="margin:24px 0;">${button(input.loginUrl, 'Open billing dashboard')}</div>
+      <p style="margin:0;">Sign in link:</p>
+      <p style="margin:8px 0 0;word-break:break-all;"><a href="${input.loginUrl}">${input.loginUrl}</a></p>
+      ${input.supportEmail ? `<p style="margin:16px 0 0;">Need help? Contact <a href="mailto:${input.supportEmail}">${input.supportEmail}</a>.</p>` : ''}
+    `,
+  );
+
+  const text = [
+    `Hello ${input.fullName},`,
+    `${input.companyName} currently has an overdue payment.`,
+    `Amount due: ${amount}`,
+    `Renewal date: ${input.renewalDate}`,
+    `Sign in: ${input.loginUrl}`,
+  ].join('\n\n');
+
+  return { subject, html, text };
+}
+
+export function buildBillingReminderEmail(input: SendBillingReminderEmailInput) {
+  const amount = `LKR ${Math.round(input.totalDueLkr).toLocaleString('en-US')}`;
+  const defaultSubject =
+    input.daysLeft > 0
+      ? `Billing reminder: ${input.companyName} payment due in ${input.daysLeft} day(s)`
+      : `Billing reminder: ${input.companyName} payment is due today`;
+
+  const replacementMap: Record<string, string> = {
+    companyName: input.companyName,
+    fullName: input.fullName,
+    totalDue: amount,
+    renewalDate: input.renewalDate,
+    loginUrl: input.loginUrl,
+    daysLeft: String(input.daysLeft),
+  };
+
+  const applyTemplate = (value: string) =>
+    value.replace(/{{\s*(companyName|fullName|totalDue|renewalDate|loginUrl|daysLeft)\s*}}/g, (_, key) => {
+      return replacementMap[key] ?? '';
+    });
+
+  const subject = input.subjectTemplate?.trim() ? applyTemplate(input.subjectTemplate) : defaultSubject;
+
+  const bodyOverride = input.bodyTemplate?.trim() ? applyTemplate(input.bodyTemplate) : '';
+  const defaultBody = `
+      <p style="margin:0 0 16px;">Hello ${input.fullName},</p>
+      <p style="margin:0 0 16px;">This is a reminder that your company workspace <strong>${input.companyName}</strong> has a billing payment due.</p>
+      <p style="margin:0 0 8px;"><strong>Amount due:</strong> ${amount}</p>
+      <p style="margin:0 0 16px;"><strong>Due date:</strong> ${input.renewalDate}</p>
+      <div style="margin:24px 0;">${button(input.loginUrl, 'Open billing dashboard')}</div>
+      <p style="margin:0;">Sign in link:</p>
+      <p style="margin:8px 0 0;word-break:break-all;"><a href="${input.loginUrl}">${input.loginUrl}</a></p>
+      ${input.supportEmail ? `<p style="margin:16px 0 0;">Need help? Contact <a href="mailto:${input.supportEmail}">${input.supportEmail}</a>.</p>` : ''}
+    `;
+
+  const html = baseLayout(subject, bodyOverride || defaultBody);
+  const text = [
+    `Hello ${input.fullName},`,
+    `Billing reminder for ${input.companyName}.`,
+    `Amount due: ${amount}`,
+    `Due date: ${input.renewalDate}`,
+    `Days left: ${input.daysLeft}`,
+    `Sign in: ${input.loginUrl}`,
   ].join('\n\n');
 
   return { subject, html, text };

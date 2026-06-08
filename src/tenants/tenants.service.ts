@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException, Injectable, Logger } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Prisma } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
@@ -9,12 +9,14 @@ import { CreateTenantDto } from './dto/create-tenant.dto';
 import { UpdateTenantDto } from './dto/update-tenant.dto';
 import { TenantLeadStatusEnum } from './dto/create-tenant.dto';
 import { CreateCompanyWithAdminDto } from './dto/create-company-with-admin.dto';
+import { UpdateBillingSettingsDto } from './dto/update-billing-settings.dto';
 
 type TxClient = Prisma.TransactionClient;
 
 @Injectable()
 export class TenantsService {
   private readonly logger = new Logger(TenantsService.name);
+  private readonly defaultReminderDays = [7, 3, 1, 0];
 
   constructor(
     private readonly prisma: PrismaService,
@@ -297,56 +299,433 @@ export class TenantsService {
       },
     });
 
-    return tenants.map((tenant) => {
-      const normalizedPlan = tenant.plan.trim().toUpperCase();
-      const planSeatPrice = this.planSeatPrice(normalizedPlan);
-      const activeEmployees = tenant._count.employees;
-      const includedSeats = tenant.seats;
-      const overageSeats = Math.max(activeEmployees - includedSeats, 0);
-      const baseAmount = includedSeats * planSeatPrice;
-      const overageAmount = overageSeats * Math.round(planSeatPrice * 1.25);
-      const subtotal = baseAmount + overageAmount;
-      const tax = Number((subtotal * 0.1).toFixed(2));
-      const totalDue = Number((subtotal + tax).toFixed(2));
+    return tenants.map((tenant) => this.toPaymentOverviewRow(tenant));
+  }
 
+  async sendOverdueReminder(tenantId: number) {
+    const tenant = await this.prisma.tenant.findUnique({
+      where: { id: tenantId },
+      include: {
+        _count: {
+          select: {
+            employees: true,
+          },
+        },
+        users: {
+          where: {
+            status: { not: 'INACTIVE' },
+            roles: {
+              some: {
+                role: {
+                  name: 'COMPANY_ADMIN',
+                },
+              },
+            },
+          },
+          select: {
+            email: true,
+            firstName: true,
+            lastName: true,
+          },
+        },
+      },
+    });
+
+    if (!tenant) {
+      throw new NotFoundException('Tenant not found.');
+    }
+
+    const payment = this.toPaymentOverviewRow(tenant);
+    if (payment.billingStatus !== 'OVERDUE') {
+      throw new BadRequestException('Reminder is available only for overdue tenants.');
+    }
+
+    if (tenant.users.length === 0) {
       return {
         tenantId: tenant.id,
         companyName: tenant.name,
-        companyCode: tenant.companyCode,
-        plan: normalizedPlan,
-        status: tenant.status,
-        billingStatus:
-          tenant.status === 'SUSPENDED'
-            ? 'OVERDUE'
-            : overageSeats > 0
-              ? 'ACTION_REQUIRED'
-              : 'CURRENT',
-        includedSeats,
-        activeEmployees,
-        overageSeats,
-        seatPrice: planSeatPrice,
-        currency: 'USD',
-        subtotal,
-        tax,
-        totalDue,
-        renewalDate: this.nextRenewalDate(tenant.createdAt),
-        createdAt: tenant.createdAt,
+        recipients: 0,
+        message: 'No active company admin recipients were found.',
       };
+    }
+
+    let sent = 0;
+    for (const user of tenant.users) {
+      try {
+        await this.emailService.sendOverduePaymentReminderEmail({
+          to: user.email,
+          fullName: `${user.firstName} ${user.lastName}`.trim(),
+          companyName: tenant.name,
+          totalDueLkr: payment.totalDue,
+          renewalDate: new Date(payment.renewalDate).toLocaleDateString('en-GB'),
+          loginUrl: this.loginUrl(),
+          supportEmail: this.config.get<string>('MAIL_SUPPORT_EMAIL') ?? undefined,
+        });
+        sent += 1;
+      } catch (error) {
+        this.logger.warn(
+          `Overdue reminder could not be sent to ${user.email}: ${error instanceof Error ? error.message : 'unknown error'}`,
+        );
+      }
+    }
+
+    return {
+      tenantId: tenant.id,
+      companyName: tenant.name,
+      recipients: sent,
+      totalDue: payment.totalDue,
+    };
+  }
+
+  async sendOverdueReminders() {
+    const overdueTenants = await this.prisma.tenant.findMany({
+      where: { status: 'SUSPENDED' },
+      select: { id: true },
+      orderBy: { createdAt: 'desc' },
     });
+
+    let tenantsReminded = 0;
+    let totalRecipients = 0;
+
+    for (const tenant of overdueTenants) {
+      const result = await this.sendOverdueReminder(tenant.id);
+      if ((result.recipients ?? 0) > 0) {
+        tenantsReminded += 1;
+      }
+      totalRecipients += result.recipients ?? 0;
+    }
+
+    return {
+      overdueTenants: overdueTenants.length,
+      tenantsReminded,
+      totalRecipients,
+    };
+  }
+
+  async getBillingSettings(tenantId: number) {
+    const tenant = await this.prisma.tenant.findUnique({
+      where: { id: tenantId },
+      include: { billingSettings: true },
+    });
+
+    if (!tenant) {
+      throw new NotFoundException('Tenant not found.');
+    }
+
+    return this.mapBillingSettings(tenantId, tenant.billingSettings);
+  }
+
+  async upsertBillingSettings(tenantId: number, dto: UpdateBillingSettingsDto) {
+    const tenant = await this.prisma.tenant.findUnique({
+      where: { id: tenantId },
+      select: { id: true },
+    });
+
+    if (!tenant) {
+      throw new NotFoundException('Tenant not found.');
+    }
+
+    const reminderDays = this.normalizeReminderDays(dto.reminderDays);
+    const recipientEmails = this.normalizeRecipientEmails(dto.recipientEmails);
+
+    const saved = await this.prisma.tenantBillingSettings.upsert({
+      where: { tenantId },
+      update: {
+        ...(dto.enabled !== undefined ? { enabled: dto.enabled } : {}),
+        ...(reminderDays ? { reminderDaysCsv: reminderDays.join(',') } : {}),
+        ...(recipientEmails ? { recipientEmailsCsv: recipientEmails.join(',') } : {}),
+        ...(dto.subjectTemplate !== undefined ? { subjectTemplate: dto.subjectTemplate || null } : {}),
+        ...(dto.bodyTemplate !== undefined ? { bodyTemplate: dto.bodyTemplate || null } : {}),
+      },
+      create: {
+        tenantId,
+        enabled: dto.enabled ?? true,
+        reminderDaysCsv: (reminderDays ?? this.defaultReminderDays).join(','),
+        recipientEmailsCsv: (recipientEmails ?? []).join(',') || null,
+        subjectTemplate: dto.subjectTemplate || null,
+        bodyTemplate: dto.bodyTemplate || null,
+      },
+    });
+
+    return this.mapBillingSettings(tenantId, saved);
+  }
+
+  async sendScheduledBillingReminders(referenceDate = new Date()) {
+    const tenants = await this.prisma.tenant.findMany({
+      where: { status: 'ACTIVE' },
+      include: {
+        billingSettings: true,
+        _count: {
+          select: {
+            employees: true,
+          },
+        },
+      },
+    });
+
+    let tenantCount = 0;
+    let emailCount = 0;
+
+    for (const tenant of tenants) {
+      const payment = this.toPaymentOverviewRow(tenant);
+      const settings = this.mapBillingSettings(tenant.id, tenant.billingSettings);
+      if (!settings.enabled) {
+        continue;
+      }
+
+      const daysLeft = this.daysUntilUtcDate(referenceDate, payment.renewalDate);
+      if (!settings.reminderDays.includes(daysLeft)) {
+        continue;
+      }
+
+      const reminderType = daysLeft > 0 ? 'PRE_DUE' : daysLeft === 0 ? 'DUE_TODAY' : 'OVERDUE';
+      const reminderKey = `${referenceDate.toISOString().slice(0, 10)}:${daysLeft}`;
+
+      const alreadySent = await this.prisma.billingReminderDispatch.findUnique({
+        where: {
+          tenantId_reminderKey: {
+            tenantId: tenant.id,
+            reminderKey,
+          },
+        },
+        select: { id: true },
+      });
+
+      if (alreadySent) {
+        continue;
+      }
+
+      const recipients = await this.resolveBillingRecipients(tenant.id, settings.recipientEmails);
+      if (recipients.length === 0) {
+        continue;
+      }
+
+      let sent = 0;
+      for (const recipient of recipients) {
+        try {
+          await this.emailService.sendBillingReminderEmail({
+            to: recipient.email,
+            fullName: recipient.fullName,
+            companyName: payment.companyName,
+            totalDueLkr: payment.totalDue,
+            renewalDate: new Date(payment.renewalDate).toLocaleDateString('en-GB'),
+            loginUrl: this.loginUrl(),
+            daysLeft,
+            subjectTemplate: settings.subjectTemplate || undefined,
+            bodyTemplate: settings.bodyTemplate || undefined,
+            supportEmail: this.config.get<string>('MAIL_SUPPORT_EMAIL') ?? undefined,
+          });
+          sent += 1;
+        } catch (error) {
+          this.logger.warn(
+            `Scheduled billing reminder failed for ${recipient.email}: ${error instanceof Error ? error.message : 'unknown error'}`,
+          );
+        }
+      }
+
+      await this.prisma.billingReminderDispatch.create({
+        data: {
+          tenantId: tenant.id,
+          reminderType,
+          reminderKey,
+          recipientCount: sent,
+        },
+      });
+
+      if (sent > 0) {
+        tenantCount += 1;
+        emailCount += sent;
+      }
+    }
+
+    return {
+      tenantsProcessed: tenants.length,
+      tenantsReminded: tenantCount,
+      emailsSent: emailCount,
+      runDate: referenceDate.toISOString(),
+    };
+  }
+
+  private mapBillingSettings(
+    tenantId: number,
+    settings: {
+      enabled: boolean;
+      reminderDaysCsv: string;
+      recipientEmailsCsv: string | null;
+      subjectTemplate: string | null;
+      bodyTemplate: string | null;
+    } | null,
+  ) {
+    const reminderDays = this.parseReminderDaysCsv(settings?.reminderDaysCsv ?? '');
+
+    return {
+      tenantId,
+      enabled: settings?.enabled ?? true,
+      reminderDays: reminderDays.length > 0 ? reminderDays : this.defaultReminderDays,
+      recipientEmails: this.parseRecipientEmailsCsv(settings?.recipientEmailsCsv ?? ''),
+      subjectTemplate: settings?.subjectTemplate ?? '',
+      bodyTemplate: settings?.bodyTemplate ?? '',
+    };
+  }
+
+  private normalizeReminderDays(days?: number[]) {
+    if (!days) {
+      return undefined;
+    }
+
+    const normalized = Array.from(
+      new Set(
+        days
+          .map((value) => Number(value))
+          .filter((value) => Number.isInteger(value) && value >= -30 && value <= 30),
+      ),
+    ).sort((a, b) => b - a);
+
+    if (normalized.length === 0) {
+      throw new BadRequestException('reminderDays must include at least one integer between -30 and 30.');
+    }
+
+    return normalized;
+  }
+
+  private parseReminderDaysCsv(csv: string): number[] {
+    if (!csv.trim()) {
+      return [];
+    }
+
+    return Array.from(
+      new Set(
+        csv
+          .split(',')
+          .map((value) => Number(value.trim()))
+          .filter((value) => Number.isInteger(value) && value >= -30 && value <= 30),
+      ),
+    ).sort((a, b) => b - a);
+  }
+
+  private normalizeRecipientEmails(emails?: string[]) {
+    if (!emails) {
+      return undefined;
+    }
+
+    const normalized = Array.from(
+      new Set(
+        emails
+          .map((value) => value.trim().toLowerCase())
+          .filter((value) => !!value),
+      ),
+    );
+
+    return normalized;
+  }
+
+  private parseRecipientEmailsCsv(csv: string): string[] {
+    if (!csv.trim()) {
+      return [];
+    }
+
+    return Array.from(
+      new Set(
+        csv
+          .split(',')
+          .map((value) => value.trim().toLowerCase())
+          .filter((value) => !!value),
+      ),
+    );
+  }
+
+  private daysUntilUtcDate(from: Date, to: Date): number {
+    const start = Date.UTC(from.getUTCFullYear(), from.getUTCMonth(), from.getUTCDate());
+    const target = Date.UTC(to.getUTCFullYear(), to.getUTCMonth(), to.getUTCDate());
+    return Math.floor((target - start) / (24 * 60 * 60 * 1000));
+  }
+
+  private async resolveBillingRecipients(tenantId: number, customEmails: string[]) {
+    const admins = await this.prisma.user.findMany({
+      where: {
+        tenantId,
+        status: { not: 'INACTIVE' },
+        roles: {
+          some: {
+            role: {
+              name: 'COMPANY_ADMIN',
+            },
+          },
+        },
+      },
+      select: {
+        email: true,
+        firstName: true,
+        lastName: true,
+      },
+    });
+
+    const recipients = new Map<string, { email: string; fullName: string }>();
+    for (const admin of admins) {
+      recipients.set(admin.email.toLowerCase(), {
+        email: admin.email,
+        fullName: `${admin.firstName} ${admin.lastName}`.trim(),
+      });
+    }
+
+    for (const email of customEmails) {
+      if (!recipients.has(email.toLowerCase())) {
+        recipients.set(email.toLowerCase(), {
+          email,
+          fullName: 'Billing Contact',
+        });
+      }
+    }
+
+    return Array.from(recipients.values());
+  }
+
+  private normalizePlan(plan: string): 'FREEMIUM' | 'STARTER' | 'GROWTH' | 'ENTERPRISE' {
+    const normalized = plan.trim().toUpperCase();
+
+    switch (normalized) {
+      case 'FREE':
+      case 'FREEMIUM':
+        return 'FREEMIUM';
+      case 'BASIC':
+      case 'STANDARD':
+      case 'STARTER':
+        return 'STARTER';
+      case 'PRO':
+      case 'GROWTH':
+        return 'GROWTH';
+      case 'ENTERPRISE':
+        return 'ENTERPRISE';
+      default:
+        return 'STARTER';
+    }
+  }
+
+  private planLabel(plan: 'FREEMIUM' | 'STARTER' | 'GROWTH' | 'ENTERPRISE'): string {
+    switch (plan) {
+      case 'FREEMIUM':
+        return 'Freemium';
+      case 'STARTER':
+        return 'Starter';
+      case 'GROWTH':
+        return 'Growth';
+      case 'ENTERPRISE':
+        return 'Enterprise';
+    }
   }
 
   private planSeatPrice(plan: string): number {
     switch (plan) {
-      case 'BASIC':
-        return 15;
-      case 'STANDARD':
-        return 24;
-      case 'PRO':
-        return 32;
+      case 'FREEMIUM':
+        return 0;
+      case 'STARTER':
+        return 400;
+      case 'GROWTH':
+        return 700;
       case 'ENTERPRISE':
-        return 45;
+        return 1000;
       default:
-        return 20;
+        return 400;
     }
   }
 
@@ -358,6 +737,52 @@ export class TenantsService {
     }
 
     return next;
+  }
+
+  private toPaymentOverviewRow(tenant: {
+    id: number;
+    name: string;
+    companyCode: string | null;
+    plan: string;
+    status: 'ACTIVE' | 'SUSPENDED';
+    seats: number;
+    createdAt: Date;
+    _count: { employees: number };
+  }) {
+    const normalizedPlan = this.normalizePlan(tenant.plan);
+    const planSeatPrice = this.planSeatPrice(normalizedPlan);
+    const activeEmployees = tenant._count.employees;
+    const includedSeats = tenant.seats;
+    const overageSeats = Math.max(activeEmployees - includedSeats, 0);
+    const baseAmount = includedSeats * planSeatPrice;
+    const overageAmount = overageSeats * Math.round(planSeatPrice * 1.25);
+    const subtotal = baseAmount + overageAmount;
+    const tax = Number((subtotal * 0.18).toFixed(2));
+    const totalDue = Number((subtotal + tax).toFixed(2));
+
+    return {
+      tenantId: tenant.id,
+      companyName: tenant.name,
+      companyCode: tenant.companyCode,
+      plan: this.planLabel(normalizedPlan),
+      status: tenant.status,
+      billingStatus:
+        tenant.status === 'SUSPENDED'
+          ? 'OVERDUE'
+          : overageSeats > 0
+            ? 'ACTION_REQUIRED'
+            : 'CURRENT',
+      includedSeats,
+      activeEmployees,
+      overageSeats,
+      seatPrice: planSeatPrice,
+      currency: 'LKR',
+      subtotal,
+      tax,
+      totalDue,
+      renewalDate: this.nextRenewalDate(tenant.createdAt),
+      createdAt: tenant.createdAt,
+    };
   }
 
   findOne(id: number) {

@@ -117,7 +117,7 @@ async function main() {
     return {
       code: `TNT${tenantNum}`,
       name: `Tenant ${tenantNum}`,
-      plan: 'Standard',
+      plan: 'Starter',
       seats: 10,
       admin: {
         email: `tetsre1@gmail.com`,

@@ -101,7 +101,20 @@ export class EmployeesService {
 
     return this.prisma.employee.findMany({
       where: { tenantId: adminContext.tenantId, deletedAt: null },
-      include: { user: true, tenant: true },
+      include: {
+        user: {
+          include: {
+            roles: {
+              include: {
+                role: {
+                  select: { name: true },
+                },
+              },
+            },
+          },
+        },
+        tenant: true,
+      },
       orderBy: { joinedDate: 'desc' },
     });
   }
@@ -379,12 +392,33 @@ export class EmployeesService {
       throw new ForbiddenException('Unauthorized role access.');
     }
 
+    const isSuperAdmin = this.hasRole(user, 'SUPER_ADMIN');
     const [adminContext, targetEmployee] = await Promise.all([
-      this.getEmployeeContext(user.sub),
-      this.prisma.employee.findUnique({ where: { id }, select: { tenantId: true, userId: true, deletedAt: true } }),
+      isSuperAdmin ? Promise.resolve(null) : this.getEmployeeContext(user.sub),
+      this.prisma.employee.findUnique({
+        where: { id },
+        select: {
+          tenantId: true,
+          userId: true,
+          deletedAt: true,
+          user: {
+            select: {
+              roles: {
+                include: {
+                  role: {
+                    select: {
+                      name: true,
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      }),
     ]);
 
-    if (!adminContext) {
+    if (!isSuperAdmin && !adminContext) {
       throw new ForbiddenException('Employee profile not found for this user.');
     }
 
@@ -392,8 +426,15 @@ export class EmployeesService {
       throw new NotFoundException('Employee not found.');
     }
 
-    if (targetEmployee.tenantId !== adminContext.tenantId) {
+    if (!isSuperAdmin && targetEmployee.tenantId !== adminContext!.tenantId) {
       throw new ForbiddenException('Cannot remove employee from another tenant.');
+    }
+
+    const targetRoles = (targetEmployee.user?.roles ?? []).map((entry) => entry.role.name);
+    const targetIsCompanyAdmin = targetRoles.includes('COMPANY_ADMIN');
+
+    if (!isSuperAdmin && targetIsCompanyAdmin) {
+      throw new ForbiddenException('Only SUPER_ADMIN can remove a COMPANY_ADMIN user.');
     }
 
     return this.prisma.$transaction(async (tx) => {

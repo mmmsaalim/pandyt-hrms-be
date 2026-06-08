@@ -18,6 +18,7 @@ import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { Roles } from '../common/decorators/roles.decorator';
 import { CreateCompanyWithAdminDto } from './dto/create-company-with-admin.dto';
+import { UpdateBillingSettingsDto } from './dto/update-billing-settings.dto';
 
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Controller('tenants')
@@ -34,6 +35,39 @@ export class TenantsController {
   @Roles('SUPER_ADMIN')
   paymentsOverview() {
     return this.tenantsService.paymentsOverview();
+  }
+
+  @Post('payments/reminders/overdue')
+  @Roles('SUPER_ADMIN')
+  sendOverdueReminders() {
+    return this.tenantsService.sendOverdueReminders();
+  }
+
+  @Post('payments/reminders/daily-run')
+  @Roles('SUPER_ADMIN')
+  runDailyBillingReminderSchedule() {
+    return this.tenantsService.sendScheduledBillingReminders();
+  }
+
+  @Post('payments/:tenantId/reminder')
+  @Roles('SUPER_ADMIN')
+  sendTenantOverdueReminder(@Param('tenantId', ParseIntPipe) tenantId: number) {
+    return this.tenantsService.sendOverdueReminder(tenantId);
+  }
+
+  @Get('payments/:tenantId/settings')
+  @Roles('SUPER_ADMIN')
+  getTenantBillingSettings(@Param('tenantId', ParseIntPipe) tenantId: number) {
+    return this.tenantsService.getBillingSettings(tenantId);
+  }
+
+  @Patch('payments/:tenantId/settings')
+  @Roles('SUPER_ADMIN')
+  updateTenantBillingSettings(
+    @Param('tenantId', ParseIntPipe) tenantId: number,
+    @Body() dto: UpdateBillingSettingsDto,
+  ) {
+    return this.tenantsService.upsertBillingSettings(tenantId, dto);
   }
 
   @Get('leads')

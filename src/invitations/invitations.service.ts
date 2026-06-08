@@ -169,7 +169,7 @@ export class InvitationsService {
       await this.emailService.sendAccountActivationEmail({
         to: invitation.user.email,
         fullName: `${invitation.user.firstName} ${invitation.user.lastName}`.trim(),
-        companyName: invitation.tenant?.name ?? 'FlowHR',
+        companyName: invitation.tenant?.name ?? 'Pandyt HR Cloud',
         loginUrl: `${appUrl}/login`,
         supportEmail: this.config.get<string>('MAIL_SUPPORT_EMAIL') ?? undefined,
       });
@@ -246,7 +246,7 @@ export class InvitationsService {
     await this.emailService.sendInvitationEmail({
       to: invitation.email,
       fullName,
-      companyName: invitation.tenant?.name ?? 'FlowHR',
+      companyName: invitation.tenant?.name ?? 'Pandyt HR Cloud',
       role: invitation.role,
       acceptUrl: this.acceptUrl(rawToken),
       expiresHours,

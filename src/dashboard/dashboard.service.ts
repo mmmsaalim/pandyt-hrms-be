@@ -5,6 +5,118 @@ import { PrismaService } from '../prisma/prisma.service';
 export class DashboardService {
   constructor(private readonly prisma: PrismaService) {}
 
+  private monthLabel(date: Date): string {
+    return date.toLocaleString('en-GB', { month: 'short' });
+  }
+
+  private buildMonthLabels(monthsBack = 7): string[] {
+    const labels: string[] = [];
+    const now = new Date();
+
+    for (let offset = monthsBack - 1; offset >= 0; offset -= 1) {
+      labels.push(this.monthLabel(new Date(now.getFullYear(), now.getMonth() - offset, 1)));
+    }
+
+    return labels;
+  }
+
+  private monthKey(date: Date): string {
+    return `${date.getFullYear()}-${date.getMonth()}`;
+  }
+
+  private buildMonthlySeries(dates: Date[], monthsBack = 7): number[] {
+    const counts = new Map<string, number>();
+    for (const date of dates) {
+      const key = this.monthKey(date);
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+
+    const now = new Date();
+    const series: number[] = [];
+
+    for (let offset = monthsBack - 1; offset >= 0; offset -= 1) {
+      const date = new Date(now.getFullYear(), now.getMonth() - offset, 1);
+      series.push(counts.get(this.monthKey(date)) ?? 0);
+    }
+
+    return series;
+  }
+
+  private buildSplitSeries(
+    labels: string[],
+    values: string[],
+    palette: string[],
+  ): Array<{ label: string; value: number; color: string }> {
+    const counts = new Map<string, number>();
+    for (const value of values) {
+      const key = value?.trim() || 'Other';
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+
+    return labels.map((label, index) => ({
+      label,
+      value: counts.get(label) ?? 0,
+      color: palette[index % palette.length],
+    }));
+  }
+
+  private buildAttendanceSeries(attendance: Array<{ date: Date }>): number[] {
+    const labels = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'];
+    const now = new Date();
+    const mondayOffset = (now.getDay() + 6) % 7;
+    const start = new Date(now);
+    start.setDate(now.getDate() - mondayOffset);
+    start.setHours(0, 0, 0, 0);
+
+    const friday = new Date(start);
+    friday.setDate(start.getDate() + 4);
+    friday.setHours(23, 59, 59, 999);
+
+    return labels.map((_, index) => {
+      const day = new Date(start);
+      day.setDate(start.getDate() + index);
+      const key = day.toDateString();
+
+      return attendance.filter((row) => {
+        const attendanceDay = new Date(row.date);
+        attendanceDay.setHours(0, 0, 0, 0);
+        return attendanceDay.toDateString() === key && attendanceDay >= start && attendanceDay <= friday;
+      }).length;
+    });
+  }
+
+  private buildPayrollSeries(payrollRuns: Array<{ processedAt: Date | null; grossAmount: number }>) {
+    const labels = this.buildMonthLabels();
+    const monthsBack = labels.length;
+    const now = new Date();
+    const buckets = new Map<string, { runs: number; grossAmount: number }>();
+
+    for (const payroll of payrollRuns) {
+      if (!payroll.processedAt) {
+        continue;
+      }
+
+      const key = this.monthKey(payroll.processedAt);
+      const current = buckets.get(key) ?? { runs: 0, grossAmount: 0 };
+      buckets.set(key, {
+        runs: current.runs + 1,
+        grossAmount: current.grossAmount + payroll.grossAmount,
+      });
+    }
+
+    const runSeries: number[] = [];
+    const amountSeries: number[] = [];
+
+    for (let offset = monthsBack - 1; offset >= 0; offset -= 1) {
+      const date = new Date(now.getFullYear(), now.getMonth() - offset, 1);
+      const bucket = buckets.get(this.monthKey(date)) ?? { runs: 0, grossAmount: 0 };
+      runSeries.push(bucket.runs);
+      amountSeries.push(Math.round(bucket.grossAmount));
+    }
+
+    return { labels, runSeries, amountSeries };
+  }
+
   async superAdminMetrics() {
     const [
       tenants,
@@ -15,6 +127,8 @@ export class DashboardService {
       leadPending,
       leadConverted,
       leadDeleted,
+      users,
+      tenantPlans,
     ] = await Promise.all([
       this.prisma.tenant.count(),
       this.prisma.tenant.count({ where: { status: 'ACTIVE' } }),
@@ -24,10 +138,27 @@ export class DashboardService {
       this.prisma.tenant.count({ where: { leadStatus: 'PENDING' } }),
       this.prisma.tenant.count({ where: { leadStatus: 'CONVERTED' } }),
       this.prisma.tenant.count({ where: { leadStatus: 'DELETED' } }),
+      this.prisma.user.findMany({ select: { createdAt: true } }),
+      this.prisma.tenant.findMany({ select: { plan: true } }),
     ]);
 
     // Calculate platform revenue (mock: $50/tenant/month base + $0.10/employee/month)
     const totalRevenue = tenants * 50 + Math.max(totalEmployees * 0.1, 0);
+    const months = this.buildMonthLabels();
+    const growthSeries = this.buildMonthlySeries(users.map((user) => user.createdAt));
+    const planCounts = Array.from(
+      tenantPlans.reduce((acc, tenant) => {
+        const key = tenant.plan?.trim() || 'Unspecified';
+        acc.set(key, (acc.get(key) ?? 0) + 1);
+        return acc;
+      }, new Map<string, number>()),
+      ([label, value]) => ({
+        label,
+        value,
+      }),
+    ).sort((a, b) => b.value - a.value);
+
+    const palette = ['#f47421', '#10b7c7', '#55bf67', '#f6a912', '#e048b2', '#8b98b7'];
 
     return {
       tenants,
@@ -36,6 +167,13 @@ export class DashboardService {
       totalPayrollRuns,
       totalUsers,
       totalRevenue,
+      months,
+      growthSeries,
+      splitSeries: planCounts.map((item, index) => ({
+        label: item.label,
+        value: item.value,
+        color: palette[index % palette.length],
+      })),
       leads: {
         pending: leadPending,
         converted: leadConverted,
@@ -60,7 +198,7 @@ export class DashboardService {
   }
 
   async companyAdminMetrics(tenantId: number) {
-    const [employees, leavePending, payrollRuns] = await Promise.all([
+    const [employees, leavePending, payrollRuns, employeeRows, attendanceRows, payrollRows] = await Promise.all([
       this.prisma.employee.count({ where: { tenantId } }),
       this.prisma.leaveRequest.count({
         where: {
@@ -69,9 +207,47 @@ export class DashboardService {
         },
       }),
       this.prisma.payrollRun.count({ where: { tenantId } }),
+      this.prisma.employee.findMany({
+        where: { tenantId },
+        select: { joinedDate: true, department: true },
+      }),
+      this.prisma.attendance.findMany({
+        where: { employee: { tenantId } },
+        select: { date: true },
+      }),
+      this.prisma.payrollRun.findMany({
+        where: { tenantId },
+        select: { processedAt: true, grossAmount: true },
+      }),
     ]);
 
-    return { employees, leavePending, payrollRuns };
+    const months = this.buildMonthLabels();
+    const growthSeries = this.buildMonthlySeries(employeeRows.map((employee) => employee.joinedDate));
+    const departmentNames = Array.from(
+      new Set(employeeRows.map((employee) => employee.department?.trim() || 'Unassigned')),
+    ).sort((a, b) => a.localeCompare(b));
+    const splitSeries = this.buildSplitSeries(
+      departmentNames,
+      employeeRows.map((employee) => employee.department?.trim() || 'Unassigned'),
+      ['#f47421', '#10b7c7', '#55bf67', '#f6a912', '#e048b2', '#8b98b7'],
+    );
+    const attendanceLabels = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'];
+    const attendanceSeries = this.buildAttendanceSeries(attendanceRows);
+    const payrollSnapshot = this.buildPayrollSeries(payrollRows);
+
+    return {
+      employees,
+      leavePending,
+      payrollRuns,
+      months,
+      growthSeries,
+      splitSeries,
+      attendanceLabels,
+      attendanceSeries,
+      payrollLabels: payrollSnapshot.labels,
+      payrollRunsSeries: payrollSnapshot.runSeries,
+      payrollAmountSeries: payrollSnapshot.amountSeries,
+    };
   }
 
   async companyAdminMetricsForUser(

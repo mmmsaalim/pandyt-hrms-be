@@ -8,6 +8,8 @@ import { PrismaService } from '../prisma/prisma.service';
 import { LoginDto } from './dto/login.dto';
 import { ForgotPasswordDto } from './dto/forgot-password.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
+import { SignupDto } from './dto/signup.dto';
+import { TenantsService } from '../tenants/tenants.service';
 
 @Injectable()
 export class AuthService {
@@ -18,6 +20,7 @@ export class AuthService {
     private readonly jwtService: JwtService,
     private readonly config: ConfigService,
     private readonly emailService: EmailService,
+    private readonly tenantsService: TenantsService,
   ) {}
 
   private normalizeCompanyCode(code: string): string {
@@ -69,7 +72,7 @@ export class AuthService {
       where: { email: normalizedEmail },
       include: {
         tenant: {
-          select: { name: true, status: true, companyCode: true },
+          select: { name: true, status: true, companyCode: true, leadStatus: true },
         },
         roles: {
           include: {
@@ -94,7 +97,13 @@ export class AuthService {
     }
 
     if (user.tenantId && user.tenant && user.tenant.status !== 'ACTIVE') {
-      throw new UnauthorizedException('Tenant is not approved yet. Please contact your super admin.');
+      if (user.tenant.leadStatus === 'PENDING') {
+        throw new UnauthorizedException('Your workspace is pending super admin approval. Please wait for activation.');
+      }
+
+      throw new UnauthorizedException(
+        'Your workspace is temporarily suspended due to payment status. Please contact support or your super admin.',
+      );
     }
 
     const validPassword = await bcrypt.compare(dto.password, user.passwordHash);
@@ -287,5 +296,23 @@ export class AuthService {
     }
 
     return { message: 'Password updated successfully.' };
+  }
+
+  async signup(dto: SignupDto) {
+    const result = await this.tenantsService.createCompanyWithAdminInvite({
+      companyName: dto.companyName,
+      companyCode: dto.companyCode,
+      adminName: dto.adminName,
+      adminEmail: dto.adminEmail,
+      subscriptionPlan: 'FREEMIUM',
+      seats: 25,
+    });
+
+    return {
+      message:
+        'Signup submitted successfully. Your workspace is queued for lead review and super admin approval.',
+      companyCode: result.tenant.companyCode,
+      requiresApproval: true,
+    };
   }
 }

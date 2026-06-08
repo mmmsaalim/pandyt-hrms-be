@@ -152,6 +152,37 @@ model Tenant {
   locations      Location[]
   leavePolicies  LeavePolicy[]
   leaveBalances  LeaveBalance[]
+  billingSettings TenantBillingSettings?
+  billingDispatchLogs BillingReminderDispatch[]
+}
+
+model TenantBillingSettings {
+  id                    Int      @id @default(autoincrement())
+  tenantId              Int      @unique
+  enabled               Boolean  @default(true)
+  reminderDaysCsv       String   @default("7,3,1,0")
+  recipientEmailsCsv    String?
+  subjectTemplate       String?
+  bodyTemplate          String?
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+  tenant                Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@map("tenant_billing_settings")
+}
+
+model BillingReminderDispatch {
+  id             Int      @id @default(autoincrement())
+  tenantId       Int
+  reminderType   String
+  reminderKey    String
+  recipientCount Int      @default(0)
+  sentAt         DateTime @default(now())
+  tenant         Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, reminderKey])
+  @@index([sentAt])
+  @@map("billing_reminder_dispatch")
 }
 
 model Invitation {

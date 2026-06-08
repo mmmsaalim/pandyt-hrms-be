@@ -4,15 +4,19 @@ import * as nodemailer from 'nodemailer';
 import { Resend } from 'resend';
 import {
   buildAccountActivationEmail,
+  buildBillingReminderEmail,
   buildInvitationEmail,
   buildOnboardingEmail,
+  buildOverduePaymentReminderEmail,
   buildPasswordResetEmail,
 } from './email.templates';
 import {
   EmailProviderName,
   SendAccountActivationEmailInput,
+  SendBillingReminderEmailInput,
   SendInvitationEmailInput,
   SendOnboardingEmailInput,
+  SendOverduePaymentReminderEmailInput,
   SendPasswordResetEmailInput,
 } from './email.types';
 
@@ -266,6 +270,16 @@ export class EmailService {
 
   async sendAccountActivationEmail(input: SendAccountActivationEmailInput) {
     const template = buildAccountActivationEmail(input);
+    return this.dispatchEmail(template.subject, template.html, template.text, input.to);
+  }
+
+  async sendOverduePaymentReminderEmail(input: SendOverduePaymentReminderEmailInput) {
+    const template = buildOverduePaymentReminderEmail(input);
+    return this.dispatchEmail(template.subject, template.html, template.text, input.to);
+  }
+
+  async sendBillingReminderEmail(input: SendBillingReminderEmailInput) {
+    const template = buildBillingReminderEmail(input);
     return this.dispatchEmail(template.subject, template.html, template.text, input.to);
   }
 }

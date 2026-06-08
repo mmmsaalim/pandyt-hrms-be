@@ -51,3 +51,26 @@ export type SendAccountActivationEmailInput = {
   loginUrl: string;
   supportEmail?: string;
 };
+
+export type SendOverduePaymentReminderEmailInput = {
+  to: string;
+  fullName: string;
+  companyName: string;
+  totalDueLkr: number;
+  renewalDate: string;
+  loginUrl: string;
+  supportEmail?: string;
+};
+
+export type SendBillingReminderEmailInput = {
+  to: string;
+  fullName: string;
+  companyName: string;
+  totalDueLkr: number;
+  renewalDate: string;
+  loginUrl: string;
+  daysLeft: number;
+  subjectTemplate?: string;
+  bodyTemplate?: string;
+  supportEmail?: string;
+};

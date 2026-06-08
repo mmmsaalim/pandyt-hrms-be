@@ -4,6 +4,7 @@ import { AuthService } from './auth.service';
 import { LoginDto } from './dto/login.dto';
 import { ForgotPasswordDto } from './dto/forgot-password.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
+import { SignupDto } from './dto/signup.dto';
 
 @Controller('auth')
 export class AuthController {
@@ -44,5 +45,10 @@ export class AuthController {
   @Post('password/reset/confirm')
   resetPassword(@Body() dto: ResetPasswordDto) {
     return this.authService.resetPassword(dto);
+  }
+
+  @Post('signup')
+  signup(@Body() dto: SignupDto) {
+    return this.authService.signup(dto);
   }
 }

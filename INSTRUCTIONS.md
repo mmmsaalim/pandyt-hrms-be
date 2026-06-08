@@ -129,3 +129,24 @@ For deeper detail (optional), see:
 - `docs/RBAC_PERMISSION_MATRIX.md`
 - `docs/SETUP_STEPS.md`
 
+## 12) Operational Rules (Latest)
+These are enforced behaviors and should not be regressed:
+
+- Public signup flow:
+  - `POST /api/auth/signup` creates tenant lead in pending approval flow.
+  - Signup defaults: `subscriptionPlan=FREEMIUM`, `leadStatus=PENDING`, approval required.
+
+- Tenant suspension messaging:
+  - If tenant is pending lead approval, login message must indicate pending super admin approval.
+  - If tenant is truly suspended after conversion, login message must indicate payment-related suspension.
+
+- Leave and attendance role behavior:
+  - `HR_MANAGER` can view and approve/reject leave within tenant.
+  - `TEAM_LEAD` can approve/reject leave only for direct reports.
+  - Attendance listing should include employee identity details (`employee.user`) for FE rendering.
+
+- Employee deletion policy:
+  - `COMPANY_ADMIN` can delete tenant users except `COMPANY_ADMIN` targets.
+  - Only `SUPER_ADMIN` can delete a `COMPANY_ADMIN` user.
+  - Deletion endpoint authorization includes `SUPER_ADMIN` and `COMPANY_ADMIN`; service enforces target-role restriction.
+
