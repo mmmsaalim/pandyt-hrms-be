@@ -34,7 +34,10 @@ export class LeaveService {
       return this.prisma.leaveRequest.findMany({
         where: { employeeId: employeeContext.id },
         orderBy: { createdAt: 'desc' },
-        include: { employee: { include: { user: true } } },
+        include: {
+          employee: { include: { user: true } },
+          approvedBy: { include: { user: true } },
+        },
       });
     }
 
@@ -42,7 +45,10 @@ export class LeaveService {
       return this.prisma.leaveRequest.findMany({
         where: { employee: { tenantId: employeeContext.tenantId } },
         orderBy: { createdAt: 'desc' },
-        include: { employee: { include: { user: true } } },
+        include: {
+          employee: { include: { user: true } },
+          approvedBy: { include: { user: true } },
+        },
       });
     }
 
@@ -51,7 +57,10 @@ export class LeaveService {
       return this.prisma.leaveRequest.findMany({
         where: { employee: { tenantId: employeeContext.tenantId } },
         orderBy: { createdAt: 'desc' },
-        include: { employee: { include: { user: true } } },
+        include: {
+          employee: { include: { user: true } },
+          approvedBy: { include: { user: true } },
+        },
       });
     }
 
@@ -65,7 +74,10 @@ export class LeaveService {
           },
         },
         orderBy: { createdAt: 'desc' },
-        include: { employee: { include: { user: true } } },
+        include: {
+          employee: { include: { user: true } },
+          approvedBy: { include: { user: true } },
+        },
       });
     }
 
@@ -130,6 +142,11 @@ export class LeaveService {
       }
     }
 
+    let approvedById: number | null = null;
+    if (dto.status === 'APPROVED' || dto.status === 'REJECTED') {
+      approvedById = requesterContext.id;
+    }
+
     return this.prisma.leaveRequest.create({
       data: {
         employeeId,
@@ -139,6 +156,7 @@ export class LeaveService {
         days: dto.days,
         reason: dto.reason,
         status: dto.status ?? 'PENDING',
+        approvedById,
       },
     });
   }
@@ -186,7 +204,21 @@ export class LeaveService {
     const newStatus = dto.status;
 
     return this.prisma.$transaction(async (tx) => {
-      const updated = await tx.leaveRequest.update({ where: { id }, data: dto });
+      const updateData: any = { ...dto };
+      if (newStatus === 'APPROVED' || newStatus === 'REJECTED') {
+        updateData.approvedById = adminEmployeeContext.id;
+      } else if (newStatus === 'PENDING') {
+        updateData.approvedById = null;
+      }
+
+      const updated = await tx.leaveRequest.update({
+        where: { id },
+        data: updateData,
+        include: {
+          employee: { include: { user: true } },
+          approvedBy: { include: { user: true } },
+        },
+      });
 
       if (originalStatus !== 'APPROVED' && newStatus === 'APPROVED') {
         const policy = await tx.leavePolicy.findFirst({
