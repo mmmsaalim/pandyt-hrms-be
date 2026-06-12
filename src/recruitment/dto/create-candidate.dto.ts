@@ -1,14 +1,21 @@
-import { IsEmail, IsInt, IsOptional, IsString, Max, Min } from 'class-validator';
+import { IsEmail, IsEnum, IsInt, IsOptional, IsString, Max, Min } from 'class-validator';
+import { PipelineStage } from '@prisma/client';
 
 export class CreateCandidateDto {
-  @IsString()
-  tenantId!: string;
-
   @IsString()
   name!: string;
 
   @IsEmail()
   email!: string;
+
+  @IsOptional()
+  @IsString()
+  phone?: string;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  jobPostId?: number;
 
   @IsString()
   roleApplied!: string;
@@ -16,12 +23,17 @@ export class CreateCandidateDto {
   @IsString()
   source!: string;
 
-  @IsString()
-  stage!: string;
+  @IsOptional()
+  @IsEnum(PipelineStage)
+  stage?: PipelineStage;
 
   @IsOptional()
   @IsInt()
-  @Min(1)
+  @Min(0)
   @Max(5)
   rating?: number;
+
+  @IsOptional()
+  @IsString()
+  notes?: string;
 }

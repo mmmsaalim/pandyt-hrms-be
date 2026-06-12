@@ -1,4 +1,10 @@
-import { ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 import { randomBytes } from 'crypto';
@@ -20,6 +26,91 @@ export class EmployeesService {
 
   private hasRole(user: RequestUser, role: string): boolean {
     return (user?.roles ?? []).includes(role);
+  }
+
+  private async resolveOrgAssignment(
+    tenantId: number,
+    input: {
+      department?: string;
+      departmentId?: number;
+      teamId?: number | null;
+      locationId?: number | null;
+    },
+    options: { requireDepartment: boolean },
+  ) {
+    let departmentName = input.department?.trim() ?? '';
+    let departmentId = input.departmentId ?? null;
+    let teamId = input.teamId === undefined ? undefined : input.teamId;
+    let locationId = input.locationId === undefined ? undefined : input.locationId;
+
+    if (departmentId) {
+      const department = await this.prisma.department.findFirst({
+        where: { id: departmentId, tenantId },
+        select: { id: true, name: true, locationId: true },
+      });
+
+      if (!department) {
+        throw new NotFoundException('Department not found in this tenant.');
+      }
+
+      departmentName = department.name;
+      if (locationId === undefined && department.locationId) {
+        locationId = department.locationId;
+      }
+    }
+
+    if (teamId) {
+      const team = await this.prisma.team.findFirst({
+        where: { id: teamId, tenantId },
+        select: { id: true, departmentId: true },
+      });
+
+      if (!team) {
+        throw new NotFoundException('Team not found in this tenant.');
+      }
+
+      if (departmentId && team.departmentId !== departmentId) {
+        throw new BadRequestException('Selected team does not belong to the selected department.');
+      }
+
+      departmentId = departmentId ?? team.departmentId;
+
+      if (!departmentName) {
+        const department = await this.prisma.department.findFirst({
+          where: { id: team.departmentId, tenantId },
+          select: { name: true, locationId: true },
+        });
+
+        if (department) {
+          departmentName = department.name;
+          if (locationId === undefined && department.locationId) {
+            locationId = department.locationId;
+          }
+        }
+      }
+    }
+
+    if (locationId) {
+      const location = await this.prisma.location.findFirst({
+        where: { id: locationId, tenantId },
+        select: { id: true },
+      });
+
+      if (!location) {
+        throw new NotFoundException('Location not found in this tenant.');
+      }
+    }
+
+    if (options.requireDepartment && !departmentName) {
+      throw new BadRequestException('Department is required.');
+    }
+
+    return {
+      department: departmentName,
+      departmentId: departmentId ?? undefined,
+      teamId,
+      locationId,
+    };
   }
 
   private async getEmployeeContext(userId: number) {
@@ -114,6 +205,9 @@ export class EmployeesService {
           },
         },
         tenant: true,
+        departmentRelation: { select: { id: true, name: true } },
+        team: { select: { id: true, name: true } },
+        location: { select: { id: true, name: true } },
       },
       orderBy: { joinedDate: 'desc' },
     });
@@ -291,8 +385,8 @@ export class EmployeesService {
     const moduleAccessMap: Record<string, string[]> = {
       EMPLOYEE: ['attendance', 'leave', 'payslips', 'reports'],
       TEAM_LEAD: ['attendance', 'leave', 'reports'],
-      HR_MANAGER: ['employees', 'leave', 'attendance', 'payroll', 'payslips', 'reports', 'configuration'],
-      COMPANY_ADMIN: ['employees', 'leave', 'attendance', 'payroll', 'payslips', 'reports', 'configuration'],
+      HR_MANAGER: ['employees', 'leave', 'attendance', 'payroll', 'payslips', 'reports', 'recruitment'],
+      COMPANY_ADMIN: ['employees', 'leave', 'attendance', 'payroll', 'payslips', 'reports', 'recruitment', 'configuration'],
     };
 
     const modulesForRole = moduleAccessMap[requestedRole] || moduleAccessMap.EMPLOYEE;
@@ -326,12 +420,26 @@ export class EmployeesService {
         dto.employeeCode,
       );
 
+      const orgAssignment = await this.resolveOrgAssignment(
+        adminContext.tenantId,
+        {
+          department: dto.department,
+          departmentId: dto.departmentId,
+          teamId: dto.teamId,
+          locationId: dto.locationId,
+        },
+        { requireDepartment: true },
+      );
+
       const employee = await tx.employee.create({
         data: {
           tenantId: adminContext.tenantId,
           userId: createdUser.id,
           employeeCode,
-          department: dto.department,
+          department: orgAssignment.department,
+          departmentId: orgAssignment.departmentId,
+          teamId: orgAssignment.teamId ?? undefined,
+          locationId: orgAssignment.locationId ?? undefined,
           designation: dto.designation,
           joinedDate: new Date(),
           employmentStatus: 'ACTIVE',
@@ -380,11 +488,48 @@ export class EmployeesService {
       throw new ForbiddenException('Cannot update employee from another tenant.');
     }
 
-    const data = dto.joinedDate
-      ? { ...dto, joinedDate: new Date(dto.joinedDate) }
-      : dto;
+    const hasOrgFields =
+      dto.department !== undefined ||
+      dto.departmentId !== undefined ||
+      dto.teamId !== undefined ||
+      dto.locationId !== undefined;
 
-    return this.prisma.employee.update({ where: { id }, data });
+    const updateData: Prisma.EmployeeUncheckedUpdateInput = {};
+
+    if (dto.designation !== undefined) updateData.designation = dto.designation;
+    if (dto.employmentStatus !== undefined) updateData.employmentStatus = dto.employmentStatus;
+    if (dto.salary !== undefined) updateData.salary = dto.salary;
+    if (dto.joinedDate) updateData.joinedDate = new Date(dto.joinedDate);
+
+    if (hasOrgFields) {
+      const current = await this.prisma.employee.findUnique({
+        where: { id },
+        select: {
+          department: true,
+          departmentId: true,
+          teamId: true,
+          locationId: true,
+        },
+      });
+
+      const orgAssignment = await this.resolveOrgAssignment(
+        adminContext.tenantId,
+        {
+          department: dto.department ?? current?.department,
+          departmentId: dto.departmentId ?? current?.departmentId ?? undefined,
+          teamId: dto.teamId !== undefined ? dto.teamId : current?.teamId,
+          locationId: dto.locationId !== undefined ? dto.locationId : current?.locationId,
+        },
+        { requireDepartment: true },
+      );
+
+      updateData.department = orgAssignment.department;
+      updateData.departmentId = orgAssignment.departmentId ?? null;
+      updateData.teamId = orgAssignment.teamId ?? null;
+      updateData.locationId = orgAssignment.locationId ?? null;
+    }
+
+    return this.prisma.employee.update({ where: { id }, data: updateData });
   }
 
   async remove(id: number, user: RequestUser) {

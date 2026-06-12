@@ -82,7 +82,7 @@ export class OrganisationController {
   @Roles('COMPANY_ADMIN', 'HR_MANAGER')
   updateDepartment(
     @Param('id', ParseIntPipe) id: number,
-    @Body() dto: { name?: string; locationId?: number; managerId?: number },
+    @Body() dto: { name?: string; locationId?: number | null; managerId?: number },
     @Req() req: { user?: { sub: number; roles?: string[]; tenantId?: number | null } },
   ) {
     return this.orgService.updateDepartment(id, dto, req.user);

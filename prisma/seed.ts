@@ -47,6 +47,26 @@ async function main() {
       module: 'configuration',
       description: 'Manage tenant roles and permission assignments.',
     },
+    {
+      permission: 'organisation.manage',
+      module: 'organisation',
+      description: 'Manage locations, departments, and teams.',
+    },
+    {
+      permission: 'organisation.read',
+      module: 'organisation',
+      description: 'View organisation tree and structure.',
+    },
+    {
+      permission: 'recruitment.read',
+      module: 'recruitment',
+      description: 'View job posts and candidates.',
+    },
+    {
+      permission: 'recruitment.manage',
+      module: 'recruitment',
+      description: 'Manage job posts, candidates, and hiring pipeline.',
+    },
   ];
 
   const permissions = await Promise.all(
@@ -90,6 +110,10 @@ async function main() {
       'payslips.manage',
       'reports.read',
       'configuration.manage',
+      'organisation.read',
+      'organisation.manage',
+      'recruitment.read',
+      'recruitment.manage',
     ]),
     setRolePermissions(hrManagerRole.id, [
       'employees.read',
@@ -98,15 +122,19 @@ async function main() {
       'leave.manage',
       'attendance.read',
       'reports.read',
-      'configuration.manage',
+      'organisation.read',
+      'organisation.manage',
+      'recruitment.read',
+      'recruitment.manage',
     ]),
     setRolePermissions(teamLeadRole.id, [
       'leave.read',
       'leave.manage',
       'attendance.read',
       'reports.read',
+      'organisation.read',
     ]),
-    setRolePermissions(employeeRole.id, ['leave.read', 'attendance.read']),
+    setRolePermissions(employeeRole.id, ['leave.read', 'attendance.read', 'organisation.read']),
   ]);
 
   const passwordHash = await bcrypt.hash('admin@123', 10);
@@ -296,6 +324,90 @@ async function main() {
     throw new Error('Seed setup did not create demo tenant/employee context.');
   }
 
+  // BRD 6.3: sample org structure for demo tenant (Sri Lanka-style branch names)
+  const seedOrgEntity = async <T>(
+    find: () => Promise<T | null>,
+    create: () => Promise<T>,
+  ): Promise<T> => {
+    const existing = await find();
+    return existing ?? create();
+  };
+
+  const colomboLocation = await seedOrgEntity(
+    () => prisma.location.findFirst({ where: { tenantId: demoTenantId, name: 'Colombo Head Office' } }),
+    () =>
+      prisma.location.create({
+        data: {
+          tenantId: demoTenantId,
+          name: 'Colombo Head Office',
+          address: 'No. 42, Galle Road, Colombo 03',
+        },
+      }),
+  );
+
+  const kandyLocation = await seedOrgEntity(
+    () => prisma.location.findFirst({ where: { tenantId: demoTenantId, name: 'Kandy Branch' } }),
+    () =>
+      prisma.location.create({
+        data: {
+          tenantId: demoTenantId,
+          name: 'Kandy Branch',
+          address: 'Dalada Veediya, Kandy',
+        },
+      }),
+  );
+
+  const hrDepartment = await seedOrgEntity(
+    () => prisma.department.findFirst({ where: { tenantId: demoTenantId, name: 'Human Resources' } }),
+    () =>
+      prisma.department.create({
+        data: {
+          tenantId: demoTenantId,
+          name: 'Human Resources',
+          locationId: colomboLocation.id,
+        },
+      }),
+  );
+
+  const engineeringDepartment = await seedOrgEntity(
+    () => prisma.department.findFirst({ where: { tenantId: demoTenantId, name: 'Engineering' } }),
+    () =>
+      prisma.department.create({
+        data: {
+          tenantId: demoTenantId,
+          name: 'Engineering',
+          locationId: kandyLocation.id,
+        },
+      }),
+  );
+
+  await seedOrgEntity(
+    () => prisma.team.findFirst({ where: { tenantId: demoTenantId, name: 'Recruitment', departmentId: hrDepartment.id } }),
+    () =>
+      prisma.team.create({
+        data: {
+          tenantId: demoTenantId,
+          name: 'Recruitment',
+          departmentId: hrDepartment.id,
+        },
+      }),
+  );
+
+  await seedOrgEntity(
+    () =>
+      prisma.team.findFirst({
+        where: { tenantId: demoTenantId, name: 'Product Development', departmentId: engineeringDepartment.id },
+      }),
+    () =>
+      prisma.team.create({
+        data: {
+          tenantId: demoTenantId,
+          name: 'Product Development',
+          departmentId: engineeringDepartment.id,
+        },
+      }),
+  );
+
   const payrollRunByPeriod = await prisma.payrollRun.findFirst({
     where: { tenantId: demoTenantId, period: '2026-04' },
   });
@@ -465,21 +577,93 @@ async function main() {
     ],
   });
 
+  const hrExecutiveJob = await seedOrgEntity(
+    () => prisma.jobPost.findFirst({ where: { tenantId: demoTenantId, title: 'HR Executive' } }),
+    () =>
+      prisma.jobPost.create({
+        data: {
+          tenantId: demoTenantId,
+          title: 'HR Executive',
+          department: 'Human Resources',
+          description: 'Support recruitment, onboarding, and employee records for Sri Lanka operations.',
+          requiredSkills: ['HR Administration', 'Recruitment', 'Onboarding'],
+          status: 'OPEN',
+          openedAt: new Date(),
+        },
+      }),
+  );
+
+  await prisma.jobPost.deleteMany({
+    where: { tenantId: demoTenantId, title: 'Software Engineer' },
+  });
+
+  await prisma.jobPost.create({
+    data: {
+      tenantId: demoTenantId,
+      title: 'Software Engineer',
+      department: 'Engineering',
+      description: 'Build HR platform features for Pandyt HRMS.',
+      requiredSkills: ['TypeScript', 'NestJS', 'Angular'],
+      status: 'OPEN',
+      openedAt: new Date(),
+    },
+  });
+
   await prisma.candidate.deleteMany({
-    where: { tenantId: demoTenantId, email: 'priya.sharma@example.com' },
+    where: { tenantId: demoTenantId, email: { in: ['priya.sharma@example.com', 'kasun.perera@example.com'] } },
   });
 
   await prisma.candidate.create({
     data: {
       tenantId: demoTenantId,
+      jobPostId: hrExecutiveJob.id,
       name: 'Priya Sharma',
       email: 'priya.sharma@example.com',
+      phone: '+94 77 123 4567',
       roleApplied: 'HR Executive',
       source: 'LinkedIn',
-      stage: 'Interview',
+      stage: 'INTERVIEW',
       rating: 4,
+      notes: 'Strong local HR operations background.',
     },
   });
+
+  await prisma.candidate.create({
+    data: {
+      tenantId: demoTenantId,
+      jobPostId: hrExecutiveJob.id,
+      name: 'Kasun Perera',
+      email: 'kasun.perera@example.com',
+      phone: '+94 71 987 6543',
+      roleApplied: 'HR Executive',
+      source: 'Employee Referral',
+      stage: 'SCREENING',
+      rating: 3,
+    },
+  });
+
+  const configurationRoles = await prisma.role.findMany({
+    where: { name: 'CONFIGURATION', tenantId: { not: null } },
+    select: { id: true },
+  });
+
+  if (configurationRoles.length > 0) {
+    await prisma.userRole.deleteMany({
+      where: {
+        roleId: { in: configurationRoles.map((role) => role.id) },
+        user: {
+          roles: {
+            none: {
+              role: {
+                name: 'COMPANY_ADMIN',
+                tenantId: null,
+              },
+            },
+          },
+        },
+      },
+    });
+  }
 
   console.log('Seed completed successfully.');
 }

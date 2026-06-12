@@ -55,6 +55,21 @@ enum PayslipStatus {
   SENT
 }
 
+enum JobPostStatus {
+  DRAFT
+  OPEN
+  CLOSED
+}
+
+enum PipelineStage {
+  APPLIED
+  SCREENING
+  INTERVIEW
+  OFFER
+  HIRED
+  REJECTED
+}
+
 model User {
   id           Int         @id @default(autoincrement())
   email        String      @unique
@@ -146,6 +161,7 @@ model Tenant {
   employees      Employee[]
   payrollRuns    PayrollRun[]
   candidates     Candidate[]
+  jobPosts       JobPost[]
   invitations    Invitation[]
   departments    Department[]
   teams          Team[]
@@ -290,17 +306,39 @@ model Payslip {
   payrollRun   PayrollRun    @relation(fields: [payrollRunId], references: [id], onDelete: Cascade)
 }
 
+model JobPost {
+  id             Int           @id @default(autoincrement())
+  tenantId       Int
+  title          String
+  department     String?
+  description    String?
+  requiredSkills String[]      @default([])
+  status         JobPostStatus @default(DRAFT)
+  openedAt       DateTime?
+  closedAt       DateTime?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+  tenant         Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  candidates     Candidate[]
+}
+
 model Candidate {
-  id          Int      @id @default(autoincrement())
-  tenantId    Int
-  name        String
-  email       String
-  roleApplied String
-  source      String
-  stage       String
-  rating      Int      @default(0)
-  appliedAt   DateTime @default(now())
-  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  id             Int           @id @default(autoincrement())
+  tenantId       Int
+  jobPostId      Int?
+  name           String
+  email          String
+  phone          String?
+  roleApplied    String
+  source         String
+  stage          PipelineStage @default(APPLIED)
+  rating         Int           @default(0)
+  resumeUrl      String?
+  resumeFileName String?
+  notes          String?
+  appliedAt      DateTime      @default(now())
+  tenant         Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  jobPost        JobPost?      @relation(fields: [jobPostId], references: [id], onDelete: SetNull)
 }
 
 model Location {

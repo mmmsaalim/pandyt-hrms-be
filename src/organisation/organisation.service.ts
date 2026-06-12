@@ -1,4 +1,4 @@
-import { Injectable, ForbiddenException, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 
 type RequestUser = { sub: number; roles?: string[]; tenantId?: number | null } | undefined;
@@ -49,6 +49,17 @@ export class OrganisationService {
     const existing = await this.prisma.location.findFirst({ where: { id, tenantId } });
     if (!existing) throw new NotFoundException('Location not found.');
 
+    const [departmentCount, employeeCount] = await Promise.all([
+      this.prisma.department.count({ where: { tenantId, locationId: id } }),
+      this.prisma.employee.count({ where: { tenantId, locationId: id, deletedAt: null } }),
+    ]);
+
+    if (departmentCount > 0 || employeeCount > 0) {
+      throw new BadRequestException(
+        'Cannot delete location while departments or employees are still assigned to it.',
+      );
+    }
+
     return this.prisma.location.delete({ where: { id } });
   }
 
@@ -63,6 +74,12 @@ export class OrganisationService {
 
   async createDepartment(dto: { name: string; locationId?: number; managerId?: number }, user: RequestUser) {
     const tenantId = this.requireTenant(user);
+
+    if (dto.locationId) {
+      const location = await this.prisma.location.findFirst({ where: { id: dto.locationId, tenantId } });
+      if (!location) throw new NotFoundException('Location not found in this tenant.');
+    }
+
     return this.prisma.department.create({
       data: {
         ...dto,
@@ -71,10 +88,19 @@ export class OrganisationService {
     });
   }
 
-  async updateDepartment(id: number, dto: { name?: string; locationId?: number; managerId?: number }, user: RequestUser) {
+  async updateDepartment(
+    id: number,
+    dto: { name?: string; locationId?: number | null; managerId?: number },
+    user: RequestUser,
+  ) {
     const tenantId = this.requireTenant(user);
     const existing = await this.prisma.department.findFirst({ where: { id, tenantId } });
     if (!existing) throw new NotFoundException('Department not found.');
+
+    if (dto.locationId) {
+      const location = await this.prisma.location.findFirst({ where: { id: dto.locationId, tenantId } });
+      if (!location) throw new NotFoundException('Location not found in this tenant.');
+    }
 
     return this.prisma.department.update({
       where: { id },
@@ -86,6 +112,14 @@ export class OrganisationService {
     const tenantId = this.requireTenant(user);
     const existing = await this.prisma.department.findFirst({ where: { id, tenantId } });
     if (!existing) throw new NotFoundException('Department not found.');
+
+    const employeeCount = await this.prisma.employee.count({
+      where: { tenantId, departmentId: id, deletedAt: null },
+    });
+
+    if (employeeCount > 0) {
+      throw new BadRequestException('Cannot delete department while employees are still assigned to it.');
+    }
 
     return this.prisma.department.delete({ where: { id } });
   }
@@ -134,67 +168,68 @@ export class OrganisationService {
     const existing = await this.prisma.team.findFirst({ where: { id, tenantId } });
     if (!existing) throw new NotFoundException('Team not found.');
 
+    const employeeCount = await this.prisma.employee.count({
+      where: { tenantId, teamId: id, deletedAt: null },
+    });
+
+    if (employeeCount > 0) {
+      throw new BadRequestException('Cannot delete team while employees are still assigned to it.');
+    }
+
     return this.prisma.team.delete({ where: { id } });
   }
 
   // --- Organisation Tree API ---
+  // BRD 6.3: Location > Department > Team (location-centric for FE tree tab)
   async getTree(user: RequestUser) {
     const tenantId = this.requireTenant(user);
 
-    // Fetch all locations, departments, teams, and active employees
-    const [departments, teams, employees] = await Promise.all([
+    const [locations, departments, teams, employees] = await Promise.all([
+      this.prisma.location.findMany({ where: { tenantId }, orderBy: { name: 'asc' } }),
       this.prisma.department.findMany({
         where: { tenantId },
-        include: { location: true },
+        orderBy: { name: 'asc' },
       }),
       this.prisma.team.findMany({
         where: { tenantId },
+        orderBy: { name: 'asc' },
       }),
       this.prisma.employee.findMany({
         where: { tenantId, deletedAt: null },
-        include: { user: true },
       }),
     ]);
 
-    // Construct hierarchy
-    const tree = departments.map((dept) => {
-      const deptTeams = teams
+    const buildDepartmentNode = (dept: (typeof departments)[number]) => ({
+      id: dept.id,
+      name: dept.name,
+      teams: teams
         .filter((t) => t.departmentId === dept.id)
-        .map((team) => {
-          const teamEmployees = employees
-            .filter((emp) => emp.teamId === team.id)
-            .map((emp) => ({
-              id: emp.id,
-              name: `${emp.user.firstName} ${emp.user.lastName}`,
-              designation: emp.designation,
-              employeeCode: emp.employeeCode,
-            }));
-
-          return {
-            id: team.id,
-            name: team.name,
-            employees: teamEmployees,
-          };
-        });
-
-      const deptEmployeesWithoutTeam = employees
-        .filter((emp) => emp.departmentId === dept.id && !emp.teamId)
-        .map((emp) => ({
-          id: emp.id,
-          name: `${emp.user.firstName} ${emp.user.lastName}`,
-          designation: emp.designation,
-          employeeCode: emp.employeeCode,
-        }));
-
-      return {
-        id: dept.id,
-        name: dept.name,
-        location: dept.location ? { id: dept.location.id, name: dept.location.name } : null,
-        teams: deptTeams,
-        employeesWithoutTeam: deptEmployeesWithoutTeam,
-      };
+        .map((team) => ({
+          id: team.id,
+          name: team.name,
+          _count: {
+            employees: employees.filter((emp) => emp.teamId === team.id).length,
+          },
+        })),
     });
 
-    return tree;
+    const locationNodes = locations.map((loc) => ({
+      id: loc.id,
+      name: loc.name,
+      departments: departments
+        .filter((d) => d.locationId === loc.id)
+        .map(buildDepartmentNode),
+    }));
+
+    const unassignedDepartments = departments.filter((d) => !d.locationId);
+    if (unassignedDepartments.length > 0) {
+      locationNodes.push({
+        id: 0,
+        name: 'Unassigned Location',
+        departments: unassignedDepartments.map(buildDepartmentNode),
+      });
+    }
+
+    return locationNodes;
   }
 }

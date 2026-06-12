@@ -1,10 +1,27 @@
-import { IsDateString, IsEnum, IsNumber, IsOptional, IsString, Min } from 'class-validator';
+import { IsDateString, IsEnum, IsInt, IsNumber, IsOptional, IsString, Min, ValidateIf } from 'class-validator';
 import { EmploymentStatusEnum } from './create-employee.dto';
 
 export class UpdateEmployeeDto {
   @IsOptional()
   @IsString()
   department?: string;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  departmentId?: number;
+
+  @IsOptional()
+  @ValidateIf((_, value) => value !== null)
+  @IsInt()
+  @Min(1)
+  teamId?: number | null;
+
+  @IsOptional()
+  @ValidateIf((_, value) => value !== null)
+  @IsInt()
+  @Min(1)
+  locationId?: number | null;
 
   @IsOptional()
   @IsString()

@@ -1,4 +1,4 @@
-import { IsEmail, IsIn, IsOptional, IsString } from 'class-validator';
+import { IsEmail, IsIn, IsInt, IsOptional, IsString, Min } from 'class-validator';
 
 export class InviteEmployeeDto {
   @IsString()
@@ -7,8 +7,24 @@ export class InviteEmployeeDto {
   @IsEmail()
   workEmail!: string;
 
+  @IsOptional()
   @IsString()
-  department!: string;
+  department?: string;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  departmentId?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  teamId?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  locationId?: number;
 
   @IsString()
   designation!: string;

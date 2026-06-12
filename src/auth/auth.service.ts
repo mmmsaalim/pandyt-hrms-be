@@ -157,18 +157,21 @@ export class AuthService {
           }>
         ).flatMap((entry) => {
           const role = entry.role;
+          const permissionKeys = role.rolePermissions.map((rp) => rp.permission.permission);
 
           // Super admin keeps full platform permissions.
           if (role.name === 'SUPER_ADMIN') {
-            return role.rolePermissions.map((rp) => rp.permission.permission);
+            return permissionKeys;
           }
 
-          // Company admin keeps only configuration access from the shared base role.
-          // Business modules are controlled by tenant module roles (EMPLOYEES, LEAVE, etc.).
+          // Company admin owns tenant configuration and full operational access.
           if (role.name === 'COMPANY_ADMIN' && role.tenantId === null) {
-            return role.rolePermissions
-              .map((rp) => rp.permission.permission)
-              .filter((permission) => permission === 'configuration.manage');
+            return permissionKeys;
+          }
+
+          // HR manager must not manage tenant roles or module configuration.
+          if (role.name === 'HR_MANAGER' && role.tenantId === null) {
+            return permissionKeys.filter((permission) => permission !== 'configuration.manage');
           }
 
           // Shared employee base role should not auto-grant business module access.
@@ -176,8 +179,12 @@ export class AuthService {
             return [];
           }
 
-          // Tenant roles are module roles and should grant their mapped permissions.
-          return role.rolePermissions.map((rp) => rp.permission.permission);
+          // Tenant module roles grant permissions; configuration is company-admin only.
+          if (role.tenantId !== null && role.name === 'CONFIGURATION') {
+            return roles.includes('COMPANY_ADMIN') ? permissionKeys : [];
+          }
+
+          return permissionKeys;
         }),
       ),
     );
