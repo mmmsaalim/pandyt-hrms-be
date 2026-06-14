@@ -25,7 +25,7 @@ export class DashboardController {
   }
 
   @Get('company-admin')
-  @Roles('COMPANY_ADMIN')
+  @Roles('COMPANY_ADMIN', 'HR_MANAGER', 'TEAM_LEAD')
   companyAdmin(
     @Req() req: { user?: { sub: number; roles?: string[] } },
     @Query('tenantId') tenantId?: number,

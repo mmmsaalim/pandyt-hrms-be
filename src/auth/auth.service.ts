@@ -24,7 +24,12 @@ export class AuthService {
   ) {}
 
   private normalizeCompanyCode(code: string): string {
-    return code.trim().toLowerCase();
+    return code
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9-]/g, '-')
+      .replace(/-+/g, '-')
+      .replace(/^-+|-+$/g, '');
   }
 
   private tokenHash(token: string): string {

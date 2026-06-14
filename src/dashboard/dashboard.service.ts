@@ -139,7 +139,9 @@ export class DashboardService {
       this.prisma.tenant.count({ where: { leadStatus: 'CONVERTED' } }),
       this.prisma.tenant.count({ where: { leadStatus: 'DELETED' } }),
       this.prisma.user.findMany({ select: { createdAt: true } }),
-      this.prisma.tenant.findMany({ select: { plan: true } }),
+      this.prisma.tenant.findMany({
+        select: { id: true, name: true, companyCode: true, plan: true, status: true, leadStatus: true, seats: true, createdAt: true },
+      }),
     ]);
 
     // Calculate platform revenue (mock: $50/tenant/month base + $0.10/employee/month)
@@ -174,6 +176,16 @@ export class DashboardService {
         value: item.value,
         color: palette[index % palette.length],
       })),
+      tenantsList: tenantPlans.map((tenant: { id: number; name: string; companyCode: string | null; plan: string; status: string; leadStatus: string; createdAt: Date; seats: number }) => ({
+        id: tenant.id,
+        name: tenant.name,
+        companyCode: tenant.companyCode ?? '',
+        plan: tenant.plan,
+        status: tenant.status,
+        leadStatus: tenant.leadStatus,
+        createdAt: tenant.createdAt,
+        seats: tenant.seats
+      })),
       leads: {
         pending: leadPending,
         converted: leadConverted,
@@ -198,7 +210,7 @@ export class DashboardService {
   }
 
   async companyAdminMetrics(tenantId: number) {
-    const [employees, leavePending, payrollRuns, employeeRows, attendanceRows, payrollRows] = await Promise.all([
+    const [employees, leavePending, payrollRuns, employeeRows, attendanceRows, payrollRows, openPositionsCount] = await Promise.all([
       this.prisma.employee.count({ where: { tenantId } }),
       this.prisma.leaveRequest.count({
         where: {
@@ -219,6 +231,7 @@ export class DashboardService {
         where: { tenantId },
         select: { processedAt: true, grossAmount: true },
       }),
+      this.prisma.jobPost.count({ where: { tenantId, status: 'OPEN' } }),
     ]);
 
     const months = this.buildMonthLabels();
@@ -239,6 +252,7 @@ export class DashboardService {
       employees,
       leavePending,
       payrollRuns,
+      openPositions: openPositionsCount,
       months,
       growthSeries,
       splitSeries,
@@ -264,7 +278,85 @@ export class DashboardService {
     }
 
     const scopedTenantId = await this.resolveTenantForCompanyAdmin(userId);
-    return this.companyAdminMetrics(scopedTenantId);
+
+    if (roles.includes('HR_MANAGER') || roles.includes('COMPANY_ADMIN')) {
+      return this.companyAdminMetrics(scopedTenantId);
+    }
+
+    if (roles.includes('TEAM_LEAD')) {
+      return this.teamLeadMetrics(userId, scopedTenantId);
+    }
+
+    throw new ForbiddenException('Unauthorized role access for dashboard metrics.');
+  }
+
+  async teamLeadMetrics(userId: number, tenantId: number) {
+    const teamLeadEmployee = await this.prisma.employee.findUnique({
+      where: { userId, tenantId },
+      select: { id: true },
+    });
+
+    if (!teamLeadEmployee) {
+      throw new ForbiddenException('Team Lead employee profile not found.');
+    }
+
+    const directReports = await this.prisma.employee.findMany({
+      where: { managerId: teamLeadEmployee.id, tenantId },
+      select: { id: true, joinedDate: true, department: true },
+    });
+
+    const directReportIds = directReports.map(emp => emp.id);
+
+    const [
+      employeesCount,
+      leavePendingCount,
+      attendanceRows,
+    ] = await Promise.all([
+      this.prisma.employee.count({ where: { id: { in: directReportIds }, tenantId } }),
+      this.prisma.leaveRequest.count({
+        where: {
+          status: 'PENDING',
+          employeeId: { in: directReportIds },
+          employee: { tenantId },
+        },
+      }),
+      this.prisma.attendance.findMany({
+        where: { employeeId: { in: directReportIds }, employee: { tenantId } },
+        select: { date: true },
+      }),
+    ]);
+
+    const months = this.buildMonthLabels();
+    const growthSeries = this.buildMonthlySeries(directReports.map(emp => emp.joinedDate));
+
+    const departmentNames = Array.from(
+      new Set(directReports.map((employee) => employee.department?.trim() || 'Unassigned')),
+    ).sort((a, b) => a.localeCompare(b));
+    const splitSeries = this.buildSplitSeries(
+      departmentNames,
+      directReports.map((employee) => employee.department?.trim() || 'Unassigned'),
+      ['#f47421', '#10b7c7', '#55bf67', '#f6a912', '#e048b2', '#8b98b7'],
+    );
+
+    const attendanceLabels = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'];
+    const attendanceSeries = this.buildAttendanceSeries(attendanceRows);
+
+    const payrollSnapshot = { labels: [], runSeries: [], amountSeries: [] };
+
+    return {
+      employees: employeesCount,
+      leavePending: leavePendingCount,
+      payrollRuns: 0,
+      openPositions: 0,
+      months,
+      growthSeries,
+      splitSeries,
+      attendanceLabels,
+      attendanceSeries,
+      payrollLabels: payrollSnapshot.labels,
+      payrollRunsSeries: payrollSnapshot.runSeries,
+      payrollAmountSeries: payrollSnapshot.amountSeries,
+    };
   }
 
   async employeeMetricsByUser(userId: number) {

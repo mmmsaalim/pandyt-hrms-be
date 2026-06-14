@@ -26,6 +26,7 @@ Main folders used in backend:
 - `src/organisation` - locations, departments, teams, tree
 - `src/dashboard` - role-aware dashboard data
 - `src/reports` - reporting endpoints
+- `src/cross-tenant-reports` - super admin cross-tenant reporting endpoints
 - `src/recruitment` - ATS core entities/endpoints
 - `src/invitations` - resolve and accept invitation flow
 - `src/common` - guards, decorators, tenant enforcement
@@ -63,6 +64,7 @@ Implemented and active:
 - Leave workflows: apply, approve/reject, balances, policies, accrual
 - Attendance workflows: clock-in/out and HR override
 - Statutory payroll processing (EPF/ETF/PAYE) and payslip generation
+- Cross-Tenant Reports: Super Admin endpoints for multi-tenant data aggregation (Leave, Attendance, Payroll).
 - Dashboard and reports core role-based data
 - Role activation in app logic: `HR_MANAGER` and `TEAM_LEAD`
 
