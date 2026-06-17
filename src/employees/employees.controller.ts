@@ -4,11 +4,14 @@ import { CreateEmployeeDto } from './dto/create-employee.dto';
 import { UpdateEmployeeDto } from './dto/update-employee.dto';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
+import { ModuleEnabledGuard } from '../common/guards/module-enabled.guard';
 import { Roles } from '../common/decorators/roles.decorator';
+import { RequireModule } from '../common/decorators/require-module.decorator';
 import { Req } from '@nestjs/common';
 import { InviteEmployeeDto } from './dto/invite-employee.dto';
 
-@UseGuards(JwtAuthGuard, RolesGuard)
+@UseGuards(JwtAuthGuard, RolesGuard, ModuleEnabledGuard)
+@RequireModule('employees')
 @Controller('employees')
 export class EmployeesController {
   constructor(private readonly employeesService: EmployeesService) {}
@@ -19,8 +22,23 @@ export class EmployeesController {
     return this.employeesService.findAll(req.user);
   }
 
+  @Get('me')
+  @Roles('COMPANY_ADMIN', 'HR_MANAGER', 'TEAM_LEAD', 'EMPLOYEE')
+  findMe(@Req() req: { user?: { sub: number; roles?: string[] } }) {
+    return this.employeesService.findMe(req.user);
+  }
+
+  @Patch('me')
+  @Roles('COMPANY_ADMIN', 'HR_MANAGER', 'TEAM_LEAD', 'EMPLOYEE')
+  updateMe(
+    @Body() dto: UpdateEmployeeDto,
+    @Req() req: { user?: { sub: number; roles?: string[] } },
+  ) {
+    return this.employeesService.updateMe(dto, req.user);
+  }
+
   @Get(':id')
-  @Roles('COMPANY_ADMIN', 'EMPLOYEE')
+  @Roles('COMPANY_ADMIN', 'HR_MANAGER', 'EMPLOYEE')
   findOne(
     @Param('id', ParseIntPipe) id: number,
     @Req() req: { user?: { sub: number; roles?: string[] } },
@@ -47,7 +65,7 @@ export class EmployeesController {
   }
 
   @Patch(':id')
-  @Roles('COMPANY_ADMIN')
+  @Roles('COMPANY_ADMIN', 'HR_MANAGER')
   update(
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: UpdateEmployeeDto,

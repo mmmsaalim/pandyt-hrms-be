@@ -7,8 +7,11 @@ type JwtPayload = {
   sub: number;
   email: string;
   roles: string[];
+  permissions?: string[];
+  effectivePermissions?: string[];
   tenantId?: number | null;
   tenantCode?: string | null;
+  enabledModules?: string[];
 };
 
 const cookieExtractor = (req: { headers?: { cookie?: string; authorization?: string } }): string | null => {

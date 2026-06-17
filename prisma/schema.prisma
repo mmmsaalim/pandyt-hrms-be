@@ -151,6 +151,7 @@ model Tenant {
   name           String
   companyCode    String?        @unique
   plan           String
+  config         Json?
   status         TenantStatus   @default(ACTIVE)
   leadStatus     TenantLeadStatus @default(PENDING)
   seats          Int            @default(5)
@@ -170,6 +171,62 @@ model Tenant {
   leaveBalances  LeaveBalance[]
   billingSettings TenantBillingSettings?
   billingDispatchLogs BillingReminderDispatch[]
+  moduleSettings TenantModuleSetting[]
+  fieldSettings  TenantFieldSetting[]
+}
+
+model ModuleDefinition {
+  id          Int               @id @default(autoincrement())
+  key         String            @unique
+  label       String
+  description String?
+  sortOrder   Int               @default(0)
+  isActive    Boolean           @default(true)
+  fields      FieldDefinition[]
+
+  @@map("module_definitions")
+}
+
+model FieldDefinition {
+  id        Int              @id @default(autoincrement())
+  moduleKey String
+  fieldKey  String
+  label     String
+  fieldType String
+  options   Json?
+  isSystem  Boolean          @default(false)
+  isActive  Boolean          @default(true)
+  module    ModuleDefinition @relation(fields: [moduleKey], references: [key], onDelete: Cascade)
+
+  @@unique([moduleKey, fieldKey])
+  @@map("field_definitions")
+}
+
+model TenantModuleSetting {
+  id        Int     @id @default(autoincrement())
+  tenantId  Int
+  moduleKey String
+  enabled   Boolean @default(true)
+  tenant    Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, moduleKey])
+  @@index([tenantId])
+  @@map("tenant_module_settings")
+}
+
+model TenantFieldSetting {
+  id        Int     @id @default(autoincrement())
+  tenantId  Int
+  moduleKey String
+  fieldKey  String
+  enabled   Boolean @default(true)
+  required  Boolean @default(false)
+  sortOrder Int     @default(0)
+  tenant    Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, moduleKey, fieldKey])
+  @@index([tenantId, moduleKey])
+  @@map("tenant_field_settings")
 }
 
 model TenantBillingSettings {
@@ -199,6 +256,15 @@ model BillingReminderDispatch {
   @@unique([tenantId, reminderKey])
   @@index([sentAt])
   @@map("billing_reminder_dispatch")
+}
+
+model PlatformSetting {
+  id        Int      @id @default(autoincrement())
+  key       String   @unique
+  value     Json
+  updatedAt DateTime @updatedAt
+
+  @@map("platform_settings")
 }
 
 model Invitation {
@@ -234,6 +300,7 @@ model Employee {
   teamId           Int?
   locationId       Int?
   managerId        Int?
+  customFields     Json             @default("{}")
   tenant           Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   user             User             @relation(fields: [userId], references: [id], onDelete: Cascade)
   departmentRelation Department?    @relation("EmployeeDepartment", fields: [departmentId], references: [id], onDelete: SetNull)

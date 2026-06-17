@@ -4,9 +4,12 @@ import { CreatePayrollRunDto } from './dto/create-payroll-run.dto';
 import { UpdatePayrollRunDto } from './dto/update-payroll-run.dto';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
+import { ModuleEnabledGuard } from '../common/guards/module-enabled.guard';
 import { Roles } from '../common/decorators/roles.decorator';
+import { RequireModule } from '../common/decorators/require-module.decorator';
 
-@UseGuards(JwtAuthGuard, RolesGuard)
+@UseGuards(JwtAuthGuard, RolesGuard, ModuleEnabledGuard)
+@RequireModule('payroll')
 @Controller('payroll')
 export class PayrollController {
   constructor(private readonly payrollService: PayrollService) {}

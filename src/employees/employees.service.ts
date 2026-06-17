@@ -13,6 +13,7 @@ import { CreateEmployeeDto } from './dto/create-employee.dto';
 import { UpdateEmployeeDto } from './dto/update-employee.dto';
 import { InviteEmployeeDto } from './dto/invite-employee.dto';
 import { InvitationsService } from '../invitations/invitations.service';
+import { TenantConfigurationService } from '../tenant-configuration/tenant-configuration.service';
 
 type RequestUser = { sub: number; roles?: string[] } | undefined;
 type TxClient = Prisma.TransactionClient;
@@ -22,7 +23,20 @@ export class EmployeesService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly invitationsService: InvitationsService,
+    private readonly tenantConfigurationService: TenantConfigurationService,
   ) {}
+
+  private async mapEmployeeResponse<T extends { tenantId: number; customFields?: unknown }>(employee: T) {
+    const runtimeConfig = await this.tenantConfigurationService.getTenantRuntimeConfig(employee.tenantId);
+    return {
+      ...employee,
+      customFields: this.tenantConfigurationService.filterCustomFieldsForRead(
+        runtimeConfig,
+        'employees',
+        employee.customFields,
+      ),
+    };
+  }
 
   private hasRole(user: RequestUser, role: string): boolean {
     return (user?.roles ?? []).includes(role);
@@ -190,7 +204,7 @@ export class EmployeesService {
       throw new ForbiddenException('Employee profile not found for this user.');
     }
 
-    return this.prisma.employee.findMany({
+    const rows = await this.prisma.employee.findMany({
       where: { tenantId: adminContext.tenantId, deletedAt: null },
       include: {
         user: {
@@ -211,6 +225,43 @@ export class EmployeesService {
       },
       orderBy: { joinedDate: 'desc' },
     });
+
+    return Promise.all(rows.map((row) => this.mapEmployeeResponse(row)));
+  }
+
+  async findMe(user: RequestUser) {
+    if (!user?.sub) {
+      throw new ForbiddenException('Unauthorized role access.');
+    }
+
+    const context = await this.getEmployeeContext(user.sub);
+    if (!context) {
+      throw new NotFoundException('Employee profile not found for this user.');
+    }
+
+    return this.findOne(context.id, user);
+  }
+
+  async updateMe(dto: UpdateEmployeeDto, user: RequestUser) {
+    if (!user?.sub) {
+      throw new ForbiddenException('Unauthorized role access.');
+    }
+
+    const context = await this.getEmployeeContext(user.sub);
+    if (!context) {
+      throw new NotFoundException('Employee profile not found for this user.');
+    }
+
+    const selfUpdate: UpdateEmployeeDto = {
+      customFields: dto.customFields,
+    };
+
+    if (this.hasRole(user, 'COMPANY_ADMIN') || this.hasRole(user, 'HR_MANAGER')) {
+      if (dto.designation !== undefined) selfUpdate.designation = dto.designation;
+      if (dto.employmentStatus !== undefined) selfUpdate.employmentStatus = dto.employmentStatus;
+    }
+
+    return this.update(context.id, selfUpdate, user);
   }
 
   async findOne(id: number, user: RequestUser) {
@@ -233,7 +284,7 @@ export class EmployeesService {
         throw new ForbiddenException('Cannot access another employee profile.');
       }
 
-      return employee;
+      return this.mapEmployeeResponse(employee);
     }
 
     const adminContext = await this.getEmployeeContext(user.sub);
@@ -241,7 +292,7 @@ export class EmployeesService {
       throw new ForbiddenException('Cannot access employee from another tenant.');
     }
 
-    return employee;
+    return this.mapEmployeeResponse(employee);
   }
 
   async create(dto: CreateEmployeeDto, user: RequestUser) {
@@ -374,12 +425,34 @@ export class EmployeesService {
 
     const tenant = await this.prisma.tenant.findUnique({
       where: { id: adminContext.tenantId },
-      select: { name: true },
+      select: { name: true, seats: true, plan: true },
     });
 
     if (!tenant) {
       throw new NotFoundException('Tenant not found for company admin.');
     }
+
+    const activeEmployeeCount = await this.prisma.employee.count({
+      where: {
+        tenantId: adminContext.tenantId,
+        deletedAt: null,
+        employmentStatus: { not: 'INACTIVE' },
+      },
+    });
+
+    if (activeEmployeeCount >= tenant.seats) {
+      throw new BadRequestException(
+        `Seat limit reached (${tenant.seats} included on ${tenant.plan} plan). Upgrade your subscription to add more employees.`,
+      );
+    }
+
+    const enabledModules = await this.tenantConfigurationService.getEnabledModuleKeys(adminContext.tenantId);
+    const runtimeConfig = await this.tenantConfigurationService.getTenantRuntimeConfig(adminContext.tenantId);
+    const validatedCustomFields = this.tenantConfigurationService.validateCustomFields(
+      runtimeConfig,
+      'employees',
+      dto.customFields,
+    );
 
     // Define module access per role
     const moduleAccessMap: Record<string, string[]> = {
@@ -389,7 +462,9 @@ export class EmployeesService {
       COMPANY_ADMIN: ['employees', 'leave', 'attendance', 'payroll', 'payslips', 'reports', 'recruitment', 'configuration'],
     };
 
-    const modulesForRole = moduleAccessMap[requestedRole] || moduleAccessMap.EMPLOYEE;
+    const modulesForRole = (moduleAccessMap[requestedRole] || moduleAccessMap.EMPLOYEE).filter((module) =>
+      enabledModules.includes(module),
+    );
 
     const result = await this.prisma.$transaction(async (tx) => {
       const createdUser = await tx.user.create({
@@ -443,6 +518,7 @@ export class EmployeesService {
           designation: dto.designation,
           joinedDate: new Date(),
           employmentStatus: 'ACTIVE',
+          customFields: validatedCustomFields as Prisma.InputJsonValue,
         },
         include: { user: true, tenant: true },
       });
@@ -529,7 +605,17 @@ export class EmployeesService {
       updateData.locationId = orgAssignment.locationId ?? null;
     }
 
-    return this.prisma.employee.update({ where: { id }, data: updateData });
+    if (dto.customFields !== undefined) {
+      const runtimeConfig = await this.tenantConfigurationService.getTenantRuntimeConfig(adminContext.tenantId);
+      updateData.customFields = this.tenantConfigurationService.validateCustomFields(
+        runtimeConfig,
+        'employees',
+        dto.customFields,
+      ) as Prisma.InputJsonValue;
+    }
+
+    const updated = await this.prisma.employee.update({ where: { id }, data: updateData });
+    return this.mapEmployeeResponse(updated);
   }
 
   async remove(id: number, user: RequestUser) {
@@ -625,6 +711,7 @@ export class EmployeesService {
         data: {
           deletedAt: new Date(),
           employmentStatus: 'INACTIVE',
+          customFields: {},
         },
       });
 

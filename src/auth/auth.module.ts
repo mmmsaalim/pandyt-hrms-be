@@ -7,6 +7,7 @@ import { AuthService } from './auth.service';
 import { JwtStrategy } from './jwt.strategy';
 import { EmailModule } from '../email/email.module';
 import { TenantsModule } from '../tenants/tenants.module';
+import { TenantConfigurationModule } from '../tenant-configuration/tenant-configuration.module';
 
 @Module({
   imports: [
@@ -14,6 +15,7 @@ import { TenantsModule } from '../tenants/tenants.module';
     PassportModule,
     EmailModule,
     TenantsModule,
+    TenantConfigurationModule,
     JwtModule.registerAsync({
       inject: [ConfigService],
       useFactory: (configService: ConfigService) => ({

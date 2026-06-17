@@ -109,6 +109,18 @@ export class TenantsController {
     return this.tenantsService.approve(id);
   }
 
+  @Patch(':id/deactivate-payment')
+  @Roles('SUPER_ADMIN')
+  deactivateForPayment(@Param('id', ParseIntPipe) id: number) {
+    return this.tenantsService.deactivateForPayment(id);
+  }
+
+  @Patch(':id/reactivate')
+  @Roles('SUPER_ADMIN')
+  reactivate(@Param('id', ParseIntPipe) id: number) {
+    return this.tenantsService.reactivate(id);
+  }
+
   @Delete(':id')
   @Roles('SUPER_ADMIN')
   remove(@Param('id', ParseIntPipe) id: number) {

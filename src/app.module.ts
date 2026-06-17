@@ -18,6 +18,7 @@ import { InvitationsModule } from './invitations/invitations.module';
 import { EmailModule } from './email/email.module';
 import { OrganisationModule } from './organisation/organisation.module';
 import { CrossTenantReportsModule } from './cross-tenant-reports/cross-tenant-reports.module';
+import { TenantConfigurationModule } from './tenant-configuration/tenant-configuration.module';
 
 @Module({
   imports: [
@@ -28,6 +29,7 @@ import { CrossTenantReportsModule } from './cross-tenant-reports/cross-tenant-re
     UsersModule,
     RolesModule,
     TenantsModule,
+    TenantConfigurationModule,
     EmployeesModule,
     LeaveModule,
     AttendanceModule,

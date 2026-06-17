@@ -1,4 +1,5 @@
-import { IsEmail, IsInt, IsOptional, IsString, Min } from 'class-validator';
+import { IsEmail, IsInt, IsObject, IsOptional, IsString, Min } from 'class-validator';
+import { SaveTenantConfigurationDto } from '../../tenant-configuration/dto/save-tenant-configuration.dto';
 
 export class CreateCompanyWithAdminDto {
   @IsString()
@@ -21,4 +22,14 @@ export class CreateCompanyWithAdminDto {
   @IsInt()
   @Min(1)
   seats?: number;
+
+  @IsOptional()
+  enabledModules?: string[];
+
+  @IsOptional()
+  @IsObject()
+  moduleFeatures?: SaveTenantConfigurationDto['moduleFeatures'];
+
+  @IsOptional()
+  config?: SaveTenantConfigurationDto['config'];
 }

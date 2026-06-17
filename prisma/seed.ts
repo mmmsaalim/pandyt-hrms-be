@@ -3,6 +3,38 @@ import * as bcrypt from 'bcrypt';
 
 const prisma = new PrismaClient();
 
+const ALL_BUSINESS_MODULE_KEYS = [
+  'employees',
+  'organisation',
+  'leave',
+  'attendance',
+  'payroll',
+  'payslips',
+  'recruitment',
+  'reports',
+] as const;
+
+const modulesForPlan = (plan: string): string[] => {
+  const normalized = plan.trim().toUpperCase();
+  if (normalized === 'FREEMIUM') return ['employees', 'leave'];
+  if (normalized === 'BASIC' || normalized === 'STARTER') {
+    return ['employees', 'leave', 'attendance', 'reports'];
+  }
+  if (normalized === 'GROWTH') {
+    return [
+      'employees',
+      'leave',
+      'attendance',
+      'payroll',
+      'payslips',
+      'recruitment',
+      'organisation',
+      'reports',
+    ];
+  }
+  return [...ALL_BUSINESS_MODULE_KEYS];
+};
+
 async function main() {
   const upsertCommonRole = async (name: string, description: string) => {
     const existing = await prisma.role.findFirst({ where: { name, tenantId: null } });
@@ -137,6 +169,150 @@ async function main() {
     setRolePermissions(employeeRole.id, ['leave.read', 'attendance.read', 'organisation.read']),
   ]);
 
+  const moduleCatalog = [
+    { key: 'employees', label: 'Employees', sortOrder: 1 },
+    { key: 'organisation', label: 'Organisation', sortOrder: 2 },
+    { key: 'leave', label: 'Leave', sortOrder: 3 },
+    { key: 'attendance', label: 'Attendance', sortOrder: 4 },
+    { key: 'payroll', label: 'Payroll', sortOrder: 5 },
+    { key: 'payslips', label: 'Payslips', sortOrder: 6 },
+    { key: 'recruitment', label: 'Recruitment', sortOrder: 7 },
+    { key: 'reports', label: 'Reports', sortOrder: 8 },
+  ];
+
+  for (const module of moduleCatalog) {
+    await prisma.moduleDefinition.upsert({
+      where: { key: module.key },
+      update: {
+        label: module.label,
+        sortOrder: module.sortOrder,
+        isActive: true,
+      },
+      create: {
+        key: module.key,
+        label: module.label,
+        sortOrder: module.sortOrder,
+        isActive: true,
+      },
+    });
+  }
+
+  const employeeFieldCatalog = [
+    { fieldKey: 'nic', label: 'NIC Number', fieldType: 'text' },
+    { fieldKey: 'epfNo', label: 'EPF Number', fieldType: 'text' },
+    { fieldKey: 'etfNo', label: 'ETF Number', fieldType: 'text' },
+    { fieldKey: 'dateOfBirth', label: 'Date of Birth', fieldType: 'date' },
+    { fieldKey: 'phone', label: 'Phone Number', fieldType: 'text' },
+    {
+      fieldKey: 'gender',
+      label: 'Gender',
+      fieldType: 'select',
+      options: { values: ['Male', 'Female', 'Other', 'Prefer not to say'] },
+    },
+    { fieldKey: 'emergencyContact', label: 'Emergency Contact', fieldType: 'text' },
+    {
+      fieldKey: 'employmentType',
+      label: 'Employment Type',
+      fieldType: 'select',
+      options: { values: ['Permanent', 'Contract', 'Probation', 'Intern'] },
+    },
+    { fieldKey: 'address', label: 'Residential Address', fieldType: 'text' },
+    { fieldKey: 'bankName', label: 'Bank Name', fieldType: 'text' },
+    { fieldKey: 'bankAccount', label: 'Bank Account Number', fieldType: 'text' },
+    {
+      fieldKey: 'religion',
+      label: 'Religion',
+      fieldType: 'select',
+      options: { values: ['Buddhist', 'Christian', 'Hindu', 'Islam', 'Other'] },
+    },
+  ];
+
+  for (const field of employeeFieldCatalog) {
+    await prisma.fieldDefinition.upsert({
+      where: {
+        moduleKey_fieldKey: {
+          moduleKey: 'employees',
+          fieldKey: field.fieldKey,
+        },
+      },
+      update: {
+        label: field.label,
+        fieldType: field.fieldType,
+        options: field.options ?? undefined,
+        isActive: true,
+      },
+      create: {
+        moduleKey: 'employees',
+        fieldKey: field.fieldKey,
+        label: field.label,
+        fieldType: field.fieldType,
+        options: field.options ?? undefined,
+        isSystem: false,
+        isActive: true,
+      },
+    });
+  }
+
+  const seedTenantConfiguration = async (
+    tenantId: number,
+    plan: string,
+    enabledModules: string[],
+    moduleFeatures: Record<string, Record<string, { enabled: boolean; required?: boolean }>>,
+  ) => {
+    await prisma.tenant.update({
+      where: { id: tenantId },
+      data: {
+        config: {
+          locale: 'en-LK',
+          currency: 'LKR',
+          fiscalYearStartMonth: 4,
+        },
+      },
+    });
+
+    for (const moduleKey of ALL_BUSINESS_MODULE_KEYS) {
+      await prisma.tenantModuleSetting.upsert({
+        where: {
+          tenantId_moduleKey: { tenantId, moduleKey },
+        },
+        update: { enabled: enabledModules.includes(moduleKey) },
+        create: {
+          tenantId,
+          moduleKey,
+          enabled: enabledModules.includes(moduleKey),
+        },
+      });
+    }
+
+    const definitions = await prisma.fieldDefinition.findMany({
+      where: { moduleKey: { in: enabledModules }, isActive: true },
+    });
+
+    for (const definition of definitions) {
+      const feature = moduleFeatures[definition.moduleKey]?.[definition.fieldKey];
+      await prisma.tenantFieldSetting.upsert({
+        where: {
+          tenantId_moduleKey_fieldKey: {
+            tenantId,
+            moduleKey: definition.moduleKey,
+            fieldKey: definition.fieldKey,
+          },
+        },
+        update: {
+          enabled: feature?.enabled ?? false,
+          required: feature?.required ?? false,
+        },
+        create: {
+          tenantId,
+          moduleKey: definition.moduleKey,
+          fieldKey: definition.fieldKey,
+          enabled: feature?.enabled ?? false,
+          required: feature?.required ?? false,
+        },
+      });
+    }
+  };
+
   const passwordHash = await bcrypt.hash('admin@123', 10);
 
   // Only 5 tenants, each with 5 users (1 admin, 4 employees), emails tetsre1@gmail.com ... tetsre5@gmail.com, password admin@123
@@ -190,8 +366,11 @@ async function main() {
 
   let demoTenantId = 0;
   let demoEmployeeId = 0;
+  let secondTenantId = 0;
 
-  for (const seed of tenantSeeds) {
+  for (let seedIndex = 0; seedIndex < tenantSeeds.length; seedIndex += 1) {
+    const seed = tenantSeeds[seedIndex];
+    const tenantNum = seedIndex + 1;
     const existingTenant = await prisma.tenant.findFirst({ where: { name: seed.name } });
     const tenant = existingTenant
       ? await prisma.tenant.update({
@@ -317,7 +496,30 @@ async function main() {
         demoTenantId = tenant.id;
         demoEmployeeId = employee.id;
       }
+
+      if (secondTenantId === 0 && tenantNum === 2) {
+        secondTenantId = tenant.id;
+      }
     }
+
+    const enabledModules =
+      tenantNum === 2
+        ? ['employees', 'attendance', 'payroll', 'payslips']
+        : modulesForPlan(seed.plan);
+
+    await seedTenantConfiguration(
+      tenant.id,
+      seed.plan,
+      enabledModules,
+      tenantNum === 1
+        ? {
+            employees: {
+              religion: { enabled: true },
+              epfNo: { enabled: true, required: false },
+            },
+          }
+        : {},
+    );
   }
 
   if (demoTenantId === 0 || demoEmployeeId === 0) {

@@ -1,5 +1,6 @@
-import { Body, Controller, Post, Res } from '@nestjs/common';
+import { Body, Controller, Get, Post, Put, Res, UseGuards, Req } from '@nestjs/common';
 import { Response } from 'express';
+import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { AuthService } from './auth.service';
 import { LoginDto } from './dto/login.dto';
 import { ForgotPasswordDto } from './dto/forgot-password.dto';
@@ -50,5 +51,11 @@ export class AuthController {
   @Post('signup')
   signup(@Body() dto: SignupDto) {
     return this.authService.signup(dto);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Get('tenant-config')
+  getTenantConfig(@Req() req: { user?: { sub: number; tenantId?: number | null } }) {
+    return this.authService.getTenantConfigForUser(req.user);
   }
 }

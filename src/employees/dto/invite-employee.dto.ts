@@ -1,4 +1,4 @@
-import { IsEmail, IsIn, IsInt, IsOptional, IsString, Min } from 'class-validator';
+import { IsEmail, IsIn, IsInt, IsObject, IsOptional, IsString, Min } from 'class-validator';
 
 export class InviteEmployeeDto {
   @IsString()
@@ -36,4 +36,8 @@ export class InviteEmployeeDto {
   @IsOptional()
   @IsString()
   employeeCode?: string;
+
+  @IsOptional()
+  @IsObject()
+  customFields?: Record<string, unknown>;
 }

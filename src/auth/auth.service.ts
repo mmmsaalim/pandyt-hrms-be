@@ -10,6 +10,7 @@ import { ForgotPasswordDto } from './dto/forgot-password.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
 import { SignupDto } from './dto/signup.dto';
 import { TenantsService } from '../tenants/tenants.service';
+import { TenantConfigurationService } from '../tenant-configuration/tenant-configuration.service';
 
 @Injectable()
 export class AuthService {
@@ -21,6 +22,7 @@ export class AuthService {
     private readonly config: ConfigService,
     private readonly emailService: EmailService,
     private readonly tenantsService: TenantsService,
+    private readonly tenantConfigurationService: TenantConfigurationService,
   ) {}
 
   private normalizeCompanyCode(code: string): string {
@@ -77,7 +79,7 @@ export class AuthService {
       where: { email: normalizedEmail },
       include: {
         tenant: {
-          select: { name: true, status: true, companyCode: true, leadStatus: true },
+          select: { name: true, status: true, companyCode: true, leadStatus: true, plan: true, seats: true },
         },
         roles: {
           include: {
@@ -106,8 +108,14 @@ export class AuthService {
         throw new UnauthorizedException('Your workspace is pending super admin approval. Please wait for activation.');
       }
 
+      if (user.tenant.leadStatus === 'DELETED') {
+        throw new UnauthorizedException(
+          'This workspace has been deactivated. Contact your super admin to reactivate your account.',
+        );
+      }
+
       throw new UnauthorizedException(
-        'Your workspace is temporarily suspended due to payment status. Please contact support or your super admin.',
+        'Your workspace is suspended due to overdue payment. Contact your super admin to restore access.',
       );
     }
 
@@ -174,9 +182,14 @@ export class AuthService {
             return permissionKeys;
           }
 
-          // HR manager must not manage tenant roles or module configuration.
+          // HR manager base role is identity only; module access comes from tenant module roles.
           if (role.name === 'HR_MANAGER' && role.tenantId === null) {
-            return permissionKeys.filter((permission) => permission !== 'configuration.manage');
+            return [];
+          }
+
+          // Team lead base role is identity only; module access comes from tenant module roles.
+          if (role.name === 'TEAM_LEAD' && role.tenantId === null) {
+            return [];
           }
 
           // Shared employee base role should not auto-grant business module access.
@@ -200,7 +213,22 @@ export class AuthService {
       permissions,
       tenantId: user.tenantId ?? null,
       tenantCode,
+      enabledModules: [] as string[],
+      effectivePermissions: permissions,
     };
+
+    let tenantConfig: Awaited<
+      ReturnType<TenantConfigurationService['getTenantRuntimeConfig']>
+    > | null = null;
+
+    if (user.tenantId) {
+      tenantConfig = await this.tenantConfigurationService.getTenantRuntimeConfig(user.tenantId);
+      payload.enabledModules = tenantConfig.enabledModules;
+      payload.effectivePermissions = this.tenantConfigurationService.getEffectivePermissions(
+        permissions,
+        tenantConfig.enabledModules,
+      );
+    }
 
     return {
       accessToken: await this.jwtService.signAsync(payload),
@@ -214,6 +242,18 @@ export class AuthService {
         tenantCode,
         roles,
         permissions,
+        enabledModules: payload.enabledModules,
+        effectivePermissions: payload.effectivePermissions,
+        tenantConfig: tenantConfig
+          ? {
+              plan: tenantConfig.plan,
+              seats: user.tenant?.seats ?? null,
+              locale: tenantConfig.config.locale,
+              currency: tenantConfig.config.currency,
+              fiscalYearStartMonth: tenantConfig.config.fiscalYearStartMonth,
+              fields: tenantConfig.fieldsByModule,
+            }
+          : null,
       },
     };
   }
@@ -310,6 +350,30 @@ export class AuthService {
     return { message: 'Password updated successfully.' };
   }
 
+  async getTenantConfigForUser(user: { sub?: number; tenantId?: number | null } | undefined) {
+    if (!user?.sub || !user.tenantId) {
+      throw new UnauthorizedException('Tenant context is required.');
+    }
+
+    const [runtimeConfig, tenant] = await Promise.all([
+      this.tenantConfigurationService.getTenantRuntimeConfig(user.tenantId),
+      this.prisma.tenant.findUnique({
+        where: { id: user.tenantId },
+        select: { plan: true, seats: true },
+      }),
+    ]);
+
+    return {
+      plan: runtimeConfig.plan,
+      seats: tenant?.seats ?? null,
+      locale: runtimeConfig.config.locale,
+      currency: runtimeConfig.config.currency,
+      fiscalYearStartMonth: runtimeConfig.config.fiscalYearStartMonth,
+      enabledModules: runtimeConfig.enabledModules,
+      fields: runtimeConfig.fieldsByModule,
+    };
+  }
+
   async signup(dto: SignupDto) {
     const result = await this.tenantsService.createCompanyWithAdminInvite({
       companyName: dto.companyName,
@@ -317,7 +381,6 @@ export class AuthService {
       adminName: dto.adminName,
       adminEmail: dto.adminEmail,
       subscriptionPlan: 'FREEMIUM',
-      seats: 25,
     });
 
     return {

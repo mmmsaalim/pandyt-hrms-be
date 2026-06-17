@@ -10,6 +10,14 @@ import { UpdateTenantDto } from './dto/update-tenant.dto';
 import { TenantLeadStatusEnum } from './dto/create-tenant.dto';
 import { CreateCompanyWithAdminDto } from './dto/create-company-with-admin.dto';
 import { UpdateBillingSettingsDto } from './dto/update-billing-settings.dto';
+import { TenantConfigurationService } from '../tenant-configuration/tenant-configuration.service';
+import { SaveTenantConfigurationDto } from '../tenant-configuration/dto/save-tenant-configuration.dto';
+import {
+  DEFAULT_TENANT_CONFIG,
+  modulesForPlan,
+  normalizePlan,
+  resolveSeatsForPlan,
+} from '../tenant-configuration/tenant-configuration.constants';
 
 type TxClient = Prisma.TransactionClient;
 
@@ -22,6 +30,7 @@ export class TenantsService {
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
     private readonly emailService: EmailService,
+    private readonly tenantConfigurationService: TenantConfigurationService,
   ) {}
 
   private normalizeCompanyCode(raw: string): string {
@@ -145,9 +154,15 @@ export class TenantsService {
     tx: TxClient,
     tenantId: number,
     userId: number,
+    enabledModules?: string[],
   ) {
+    const moduleKeys =
+      enabledModules ??
+      (await this.tenantConfigurationService.getEnabledModuleKeys(tenantId));
+
     const permissions = await tx.permission.findMany({
       where: {
+        module: { in: moduleKeys },
         NOT: [{ module: 'configuration' }, { module: 'tenants' }],
       },
       orderBy: [{ module: 'asc' }, { permission: 'asc' }],
@@ -288,18 +303,26 @@ export class TenantsService {
   }
 
   async paymentsOverview() {
-    const tenants = await this.prisma.tenant.findMany({
-      orderBy: { createdAt: 'desc' },
-      include: {
-        _count: {
-          select: {
-            employees: true,
+    const [tenants, billingConfig] = await Promise.all([
+      this.prisma.tenant.findMany({
+        orderBy: { createdAt: 'desc' },
+        include: {
+          _count: {
+            select: {
+              employees: {
+                where: {
+                  deletedAt: null,
+                  employmentStatus: { not: 'INACTIVE' },
+                },
+              },
+            },
           },
         },
-      },
-    });
+      }),
+      this.tenantConfigurationService.getPlatformBillingConfig(),
+    ]);
 
-    return tenants.map((tenant) => this.toPaymentOverviewRow(tenant));
+    return tenants.map((tenant) => this.toPaymentOverviewRow(tenant, billingConfig));
   }
 
   async sendOverdueReminder(tenantId: number) {
@@ -335,7 +358,8 @@ export class TenantsService {
       throw new NotFoundException('Tenant not found.');
     }
 
-    const payment = this.toPaymentOverviewRow(tenant);
+    const billingConfig = await this.tenantConfigurationService.getPlatformBillingConfig();
+    const payment = this.toPaymentOverviewRow(tenant, billingConfig);
     if (payment.billingStatus !== 'OVERDUE') {
       throw new BadRequestException('Reminder is available only for overdue tenants.');
     }
@@ -356,7 +380,7 @@ export class TenantsService {
           to: user.email,
           fullName: `${user.firstName} ${user.lastName}`.trim(),
           companyName: tenant.name,
-          totalDueLkr: payment.totalDue,
+          totalDueLkr: payment.totalDue ?? 0,
           renewalDate: new Date(payment.renewalDate).toLocaleDateString('en-GB'),
           loginUrl: this.loginUrl(),
           supportEmail: this.config.get<string>('MAIL_SUPPORT_EMAIL') ?? undefined,
@@ -465,9 +489,10 @@ export class TenantsService {
 
     let tenantCount = 0;
     let emailCount = 0;
+    const billingConfig = await this.tenantConfigurationService.getPlatformBillingConfig();
 
     for (const tenant of tenants) {
-      const payment = this.toPaymentOverviewRow(tenant);
+      const payment = this.toPaymentOverviewRow(tenant, billingConfig);
       const settings = this.mapBillingSettings(tenant.id, tenant.billingSettings);
       if (!settings.enabled) {
         continue;
@@ -507,7 +532,7 @@ export class TenantsService {
             to: recipient.email,
             fullName: recipient.fullName,
             companyName: payment.companyName,
-            totalDueLkr: payment.totalDue,
+            totalDueLkr: payment.totalDue ?? 0,
             renewalDate: new Date(payment.renewalDate).toLocaleDateString('en-GB'),
             loginUrl: this.loginUrl(),
             daysLeft,
@@ -714,21 +739,6 @@ export class TenantsService {
     }
   }
 
-  private planSeatPrice(plan: string): number {
-    switch (plan) {
-      case 'FREEMIUM':
-        return 0;
-      case 'STARTER':
-        return 400;
-      case 'GROWTH':
-        return 700;
-      case 'ENTERPRISE':
-        return 1000;
-      default:
-        return 400;
-    }
-  }
-
   private nextRenewalDate(createdAt: Date): Date {
     const next = new Date(createdAt);
     next.setMonth(next.getMonth() + 1);
@@ -739,47 +749,51 @@ export class TenantsService {
     return next;
   }
 
-  private toPaymentOverviewRow(tenant: {
-    id: number;
-    name: string;
-    companyCode: string | null;
-    plan: string;
-    status: 'ACTIVE' | 'SUSPENDED';
-    seats: number;
-    createdAt: Date;
-    _count: { employees: number };
-  }) {
+  private toPaymentOverviewRow(
+    tenant: {
+      id: number;
+      name: string;
+      companyCode: string | null;
+      plan: string;
+      status: 'ACTIVE' | 'SUSPENDED';
+      seats: number;
+      createdAt: Date;
+      _count: { employees: number };
+    },
+    billingConfig?: Awaited<ReturnType<TenantConfigurationService['getPlatformBillingConfig']>>,
+  ) {
     const normalizedPlan = this.normalizePlan(tenant.plan);
-    const planSeatPrice = this.planSeatPrice(normalizedPlan);
-    const activeEmployees = tenant._count.employees;
-    const includedSeats = tenant.seats;
-    const overageSeats = Math.max(activeEmployees - includedSeats, 0);
-    const baseAmount = includedSeats * planSeatPrice;
-    const overageAmount = overageSeats * Math.round(planSeatPrice * 1.25);
-    const subtotal = baseAmount + overageAmount;
-    const tax = Number((subtotal * 0.18).toFixed(2));
-    const totalDue = Number((subtotal + tax).toFixed(2));
+    const billing = this.tenantConfigurationService.computeTenantBilling({
+      plan: tenant.plan,
+      seats: tenant.seats,
+      activeEmployees: tenant._count.employees,
+      billingConfig,
+    });
 
     return {
       tenantId: tenant.id,
       companyName: tenant.name,
       companyCode: tenant.companyCode,
       plan: this.planLabel(normalizedPlan),
+      planKey: normalizedPlan,
       status: tenant.status,
       billingStatus:
         tenant.status === 'SUSPENDED'
           ? 'OVERDUE'
-          : overageSeats > 0
+          : billing.overageSeats > 0
             ? 'ACTION_REQUIRED'
             : 'CURRENT',
-      includedSeats,
-      activeEmployees,
-      overageSeats,
-      seatPrice: planSeatPrice,
+      includedSeats: billing.includedSeats,
+      activeEmployees: billing.activeEmployees,
+      overageSeats: billing.overageSeats,
+      monthlyPlanPrice: billing.monthlyPlanPrice,
+      overageSeatPrice: billing.overageSeatPrice,
+      isCustomPricing: billing.isCustomPricing,
+      seatPrice: billing.overageSeatPrice,
       currency: 'LKR',
-      subtotal,
-      tax,
-      totalDue,
+      subtotal: billing.subtotal,
+      tax: billing.tax,
+      totalDue: billing.isCustomPricing && billing.overageSeats === 0 ? null : billing.totalDue,
       renewalDate: this.nextRenewalDate(tenant.createdAt),
       createdAt: tenant.createdAt,
     };
@@ -829,18 +843,41 @@ export class TenantsService {
     }
 
     const companyCode = await this.resolveCompanyCode(dto.companyCode, dto.companyName);
+    const normalizedPlan = normalizePlan(dto.subscriptionPlan);
+    const enabledModules = dto.enabledModules?.length
+      ? dto.enabledModules.map((key) => key.trim().toLowerCase())
+      : modulesForPlan(normalizedPlan);
+    const moduleFeatures = this.tenantConfigurationService.buildDefaultModuleFeatures(
+      enabledModules,
+      dto.moduleFeatures,
+    );
+    const tenantConfig = {
+      locale: dto.config?.locale ?? DEFAULT_TENANT_CONFIG.locale,
+      currency: dto.config?.currency ?? DEFAULT_TENANT_CONFIG.currency,
+      fiscalYearStartMonth:
+        dto.config?.fiscalYearStartMonth ?? DEFAULT_TENANT_CONFIG.fiscalYearStartMonth,
+    };
 
     const result = await this.prisma.$transaction(async (tx) => {
       const tenant = await tx.tenant.create({
         data: {
           name: dto.companyName,
           companyCode,
-          plan: dto.subscriptionPlan,
+          plan: normalizedPlan,
           status: 'SUSPENDED',
           leadStatus: 'PENDING',
-          seats: dto.seats ?? 25,
+          seats: resolveSeatsForPlan(normalizedPlan, dto.seats),
+          config: tenantConfig,
         },
       });
+
+      await this.tenantConfigurationService.persistModuleSettings(tx, tenant.id, enabledModules);
+      await this.tenantConfigurationService.persistFieldSettings(
+        tx,
+        tenant.id,
+        moduleFeatures,
+        enabledModules,
+      );
 
       const user = await tx.user.create({
         data: {
@@ -860,7 +897,7 @@ export class TenantsService {
         },
       });
 
-      await this.ensureBusinessModuleAccess(tx, tenant.id, user.id);
+      await this.ensureBusinessModuleAccess(tx, tenant.id, user.id, enabledModules);
       await this.ensureCompanyAdminEmployeeProfile(tx, tenant.id, {
         id: user.id,
         firstName: user.firstName,
@@ -1004,12 +1041,22 @@ export class TenantsService {
       companyCode = await this.resolveCompanyCode(dto.companyCode, dto.name ?? tenant.name, id);
     }
 
+    const data: UpdateTenantDto & { companyCode?: string } = { ...dto };
+    if (companyCode) {
+      data.companyCode = companyCode;
+    }
+
+    if (dto.plan && dto.seats === undefined) {
+      data.seats = resolveSeatsForPlan(dto.plan);
+    }
+
+    if (dto.plan) {
+      data.plan = normalizePlan(dto.plan);
+    }
+
     return this.prisma.tenant.update({
       where: { id },
-      data: {
-        ...dto,
-        ...(companyCode ? { companyCode } : {}),
-      },
+      data,
     });
   }
 
@@ -1019,6 +1066,56 @@ export class TenantsService {
       data: {
         status: 'SUSPENDED',
         leadStatus: 'DELETED',
+      },
+    });
+  }
+
+  async deactivateForPayment(id: number) {
+    const tenant = await this.prisma.tenant.findUnique({
+      where: { id },
+      select: { id: true, status: true, leadStatus: true },
+    });
+
+    if (!tenant) {
+      throw new BadRequestException('Tenant not found.');
+    }
+
+    if (tenant.status === 'SUSPENDED') {
+      throw new BadRequestException('Tenant is already suspended.');
+    }
+
+    if (tenant.leadStatus === 'PENDING') {
+      throw new BadRequestException('Approve the tenant before suspending for payment.');
+    }
+
+    return this.prisma.tenant.update({
+      where: { id },
+      data: {
+        status: 'SUSPENDED',
+        leadStatus: 'CONVERTED',
+      },
+    });
+  }
+
+  async reactivate(id: number) {
+    const tenant = await this.prisma.tenant.findUnique({
+      where: { id },
+      select: { id: true, status: true },
+    });
+
+    if (!tenant) {
+      throw new BadRequestException('Tenant not found.');
+    }
+
+    if (tenant.status === 'ACTIVE') {
+      throw new BadRequestException('Tenant is already active.');
+    }
+
+    return this.prisma.tenant.update({
+      where: { id },
+      data: {
+        status: 'ACTIVE',
+        leadStatus: 'CONVERTED',
       },
     });
   }

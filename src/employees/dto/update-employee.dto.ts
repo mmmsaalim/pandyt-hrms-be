@@ -1,4 +1,4 @@
-import { IsDateString, IsEnum, IsInt, IsNumber, IsOptional, IsString, Min, ValidateIf } from 'class-validator';
+import { IsDateString, IsEnum, IsInt, IsNumber, IsObject, IsOptional, IsString, Min, ValidateIf } from 'class-validator';
 import { EmploymentStatusEnum } from './create-employee.dto';
 
 export class UpdateEmployeeDto {
@@ -39,4 +39,8 @@ export class UpdateEmployeeDto {
   @IsNumber()
   @Min(0)
   salary?: number;
+
+  @IsOptional()
+  @IsObject()
+  customFields?: Record<string, unknown>;
 }

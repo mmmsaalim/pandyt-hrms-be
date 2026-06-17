@@ -22,11 +22,14 @@ import { CreateJobPostDto } from './dto/create-job-post.dto';
 import { UpdateJobPostDto } from './dto/update-job-post.dto';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
+import { ModuleEnabledGuard } from '../common/guards/module-enabled.guard';
 import { Roles } from '../common/decorators/roles.decorator';
+import { RequireModule } from '../common/decorators/require-module.decorator';
 
 const RECRUITMENT_ROLES = ['COMPANY_ADMIN', 'HR_MANAGER'] as const;
 
-@UseGuards(JwtAuthGuard, RolesGuard)
+@UseGuards(JwtAuthGuard, RolesGuard, ModuleEnabledGuard)
+@RequireModule('recruitment')
 @Controller('recruitment')
 export class RecruitmentController {
   constructor(private readonly recruitmentService: RecruitmentService) {}

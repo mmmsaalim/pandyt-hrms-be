@@ -18,6 +18,8 @@ Single source for backend context. This file is written for both humans and AI a
 Main folders used in backend:
 - `src/auth` - login, logout, JWT, tenant-aware auth
 - `src/tenants` - super admin tenant onboarding/lifecycle
+- `src/tenant-configuration` - super admin tenant-wise module/field configuration + platform catalog
+- `src/roles` - company admin RBAC (tenant module roles, user access assignment)
 - `src/employees` - employee CRUD, invite, export, anonymize
 - `src/leave` - request, approvals, policies, balances, accrual
 - `src/attendance` - clock-in/out, overrides
@@ -35,11 +37,11 @@ Main folders used in backend:
 - `prisma/seed.ts` - idempotent seed
 
 ## 4) Role Model (Current)
-- `SUPER_ADMIN`: platform tenant lifecycle only
-- `COMPANY_ADMIN`: full tenant operations
-- `HR_MANAGER`: tenant-wide HR operations
-- `TEAM_LEAD`: scoped team operations (direct reports)
-- `EMPLOYEE`: self-scoped operations
+- `SUPER_ADMIN`: platform tenant lifecycle + **tenant-wise configuration** (plan, enabled modules, custom fields)
+- `COMPANY_ADMIN`: full tenant operations + **user/module role assignment** (Users & Permissions — not module toggles)
+- `HR_MANAGER`: tenant HR identity role; **module access only via assigned tenant module roles** (e.g. `EMPLOYEES`, `LEAVE`)
+- `TEAM_LEAD`: team identity role; **module access only via assigned tenant module roles**
+- `EMPLOYEE`: self-service identity role; **module access only via assigned tenant module roles**
 
 ## 5) Security Baseline Status (Complete)
 Implemented and active:
@@ -65,6 +67,8 @@ Implemented and active:
 - Attendance workflows: clock-in/out and HR override
 - Statutory payroll processing (EPF/ETF/PAYE) and payslip generation
 - Cross-Tenant Reports: Super Admin endpoints for multi-tenant data aggregation (Leave, Attendance, Payroll).
+- **Tenant-wise configuration**: Super Admin sets plan, enabled modules, and custom employee fields per tenant; runtime enforced via login payload + `ModuleEnabledGuard`.
+- **Company Admin RBAC**: tenant module roles (`EMPLOYEES`, `LEAVE`, etc.) assigned per user; `HR_MANAGER` / `TEAM_LEAD` / `EMPLOYEE` base roles do **not** auto-grant module permissions.
 - Dashboard and reports core role-based data
 - Role activation in app logic: `HR_MANAGER` and `TEAM_LEAD`
 
@@ -150,6 +154,139 @@ yarn prisma:seed
 
 ---
 
+## 14) Super Admin Tenant Configuration (Tenant-Wise Setup)
+
+This section documents the **Super Admin control plane** for per-tenant module and field configuration. Read this before touching `src/tenant-configuration`, tenant onboarding config, or login/runtime gating.
+
+### 14.1 Two Configuration Planes (Do Not Mix)
+
+| Plane | Who | What they configure | APIs / UI |
+|-------|-----|---------------------|-----------|
+| **Tenant setup** | `SUPER_ADMIN` | Subscription plan, enabled modules, custom field toggles/required flags, locale/currency/fiscal year | `PUT /api/tenants/:id/configuration`, FE `/tenants` + `/platform/catalog` |
+| **User permissions** | `COMPANY_ADMIN` | Which users get which tenant module roles (`EMPLOYEES`, `LEAVE`, `ATTENDANCE`, …) and permission matrices | `src/roles`, FE `/configuration/users-permissions` |
+
+Super Admin owns **what the tenant can use**. Company Admin owns **which users inside the tenant can use each enabled module**.
+
+### 14.2 Data Model (`prisma/schema.prisma`)
+
+```
+ModuleDefinition (platform catalog)
+ └── FieldDefinition
+
+Tenant
+ ├── config (JSON: locale, currency, fiscalYearStartMonth)
+ ├── TenantModuleSetting (moduleKey, enabled)
+ ├── TenantFieldSetting (moduleKey, fieldKey, enabled, required, sortOrder)
+ └── Employee.customFields (JSON — validated against tenant field settings)
+```
+
+Seed creates platform catalog modules/fields and demo tenant module settings (Tenant 1 = full modules, Tenant 2 = limited).
+
+### 14.3 Plan Presets vs Super Admin Override
+
+Plan presets in `tenant-configuration.constants.ts`:
+
+| Plan | Default modules |
+|------|-----------------|
+| `FREEMIUM` | employees, leave |
+| `STARTER` / `BASIC` | + attendance, reports |
+| `GROWTH` | + payroll, payslips, recruitment, organisation |
+| `ENTERPRISE` | all business modules |
+
+- Changing plan in Super Admin UI applies preset as **defaults** (module checkboxes reset to plan defaults).
+- Super Admin **may enable modules beyond the plan tier** when saving tenant configuration (plan presets are not a hard ceiling).
+
+### 14.4 Super Admin API Endpoints (`src/tenant-configuration`)
+
+| Method | Path | Role | Purpose |
+|--------|------|------|---------|
+| GET | `/api/platform/modules` | SUPER_ADMIN | List platform module catalog |
+| POST | `/api/platform/modules` | SUPER_ADMIN | Add module to global catalog |
+| GET | `/api/platform/modules/:key/fields` | SUPER_ADMIN | List fields for a module |
+| POST | `/api/platform/modules/:key/fields` | SUPER_ADMIN | Add field to module catalog |
+| GET | `/api/tenants/:id/configuration` | SUPER_ADMIN | Load tenant config wizard payload |
+| PUT | `/api/tenants/:id/configuration` | SUPER_ADMIN | Save plan, modules, fields, locale settings |
+| GET | `/api/tenants/:id/configuration/preview` | SUPER_ADMIN | Preview runtime config |
+
+Tenant onboard (`POST /api/tenants/onboard`) and company-with-admin flows persist module/field settings via `TenantConfigurationService.persistModuleSettings` / `persistFieldSettings`.
+
+### 14.5 Runtime Enforcement (Login + Guards)
+
+Login (`src/auth/auth.service.ts`) for tenant users returns:
+
+- `enabledModules` — modules enabled for the tenant (from `TenantModuleSetting`)
+- `effectivePermissions` — user permissions filtered to enabled modules (+ `configuration.*` always kept for Company Admin RBAC screen)
+- `tenantConfig` — plan, locale, currency, fiscal year, `fields` by module
+
+Guards and filters:
+
+- `ModuleEnabledGuard` + `@RequireModule('…')` on module controllers (employees, leave, attendance, payroll, payslips, recruitment, organisation, reports)
+- `PermissionsGuard` + `@RequirePermissions('…')` on attendance endpoints (and extend as needed)
+- `roles.service` filters configuration/invite data by enabled modules
+- `employees.service` validates `customFields` against tenant field settings
+
+### 14.6 Company Admin RBAC (Tenant Module Roles)
+
+Tenant module roles are created per enabled module (name = module key uppercased, e.g. `ATTENDANCE`) with that module's permissions.
+
+Permission resolution on login:
+
+- `COMPANY_ADMIN` (global role): all seed permissions, filtered by `enabledModules`
+- `HR_MANAGER`, `TEAM_LEAD`, `EMPLOYEE` (global roles): **no business permissions** — only tenant module roles grant access
+- Tenant module roles (e.g. `EMPLOYEES`, `LEAVE`): grant module permissions when assigned to a user
+
+Company Admin endpoints (`src/roles`):
+
+- `POST /api/roles/tenant/bootstrap-modules` — create/update tenant module roles for enabled modules
+- User assign/unassign scoped roles for module access (used by FE Configuration page)
+
+Invite flow (`employees.service.inviteEmployee`) auto-assigns default module roles by invited job role, but Company Admin can later narrow access via Users & Permissions.
+
+### 14.7 Implementation Status
+
+| Step | Task | Status | Files |
+|------|------|--------|-------|
+| 1 | Prisma models + seed catalog | ✅ Done | `prisma/schema.prisma`, `prisma/seed.ts` |
+| 2 | TenantConfigurationService + Super Admin APIs | ✅ Done | `src/tenant-configuration/*` |
+| 3 | Login payload + ModuleEnabledGuard | ✅ Done | `src/auth/auth.service.ts`, `src/common/guards/module-enabled.guard.ts` |
+| 4 | Employee customFields validation | ✅ Done | `src/employees/employees.service.ts` |
+| 5 | Company Admin RBAC bootstrap + module role filter | ✅ Done | `src/roles/roles.service.ts` |
+| 6 | HR_MANAGER/TEAM_LEAD permission via module roles only | ✅ Done | `src/auth/auth.service.ts` |
+| 7 | Attendance PermissionsGuard | ✅ Done | `src/common/guards/permissions.guard.ts`, `src/attendance/*` |
+
+### 14.8 Rules for AI Agents
+
+1. **Never let Company Admin toggle tenant modules** — that is Super Admin only (`PUT /tenants/:id/configuration`).
+2. **Never grant module permissions from HR_MANAGER/TEAM_LEAD/EMPLOYEE base roles** — use tenant module role assignment.
+3. **Sidebar/API visibility** must respect both `enabledModules` (tenant) and `effectivePermissions` (user).
+4. **Plan presets are defaults**, not save-time hard blocks for Super Admin.
+5. **`configuration.manage`** is for Company Admin RBAC UI only — not a billable module toggle.
+
+### 14.10 Tenant lifecycle (suspend / archive / reactivate)
+
+Super Admin tenant status uses **`status`** + **`leadStatus`** together:
+
+| Action | API | `status` | `leadStatus` | Login message for tenant users |
+|--------|-----|----------|--------------|--------------------------------|
+| Approve onboarding | `PATCH /api/tenants/:id/approve` | `ACTIVE` | `CONVERTED` | Normal login |
+| **Deactivate (overdue payment)** | `PATCH /api/tenants/:id/deactivate-payment` | `SUSPENDED` | `CONVERTED` | Payment suspension message |
+| **Archive** (soft off-board, reactivatable) | `DELETE /api/tenants/:id` | `SUSPENDED` | `DELETED` | Workspace deactivated — contact super admin |
+| **Reactivate** | `PATCH /api/tenants/:id/reactivate` | `ACTIVE` | `CONVERTED` | Normal login |
+
+Login checks (`src/auth/auth.service.ts`) must distinguish the three suspended cases above — never use one generic payment message for archived tenants.
+
+Company Payments `billingStatus: OVERDUE` maps to `status === SUSPENDED` (both payment suspend and archive).
+
+### 14.11 Quick Verification
+
+1. Login as Super Admin → `/tenants` → **Configure Tenant** → set plan, enable/disable modules and employee fields → Save.
+2. Login as that tenant's Company Admin → sidebar shows only enabled modules.
+3. Configuration → Users & Permissions → assign only the module roles that user should have (e.g. `EMPLOYEES`, `LEAVE` — omit any others).
+4. Login as that user after re-login → sidebar and routes show **only** assigned modules (same rule for every module: Employees, Leave, Attendance, Payroll, etc.).
+5. Re-login after any permission change (JWT carries `effectivePermissions`).
+
+---
+
 ## 7) Next Scope (Planned)
 Planned next roadmap items:
 - AI resume parsing and candidate scoring (Phase 3 — recruitment stub ready)
@@ -198,6 +335,8 @@ Email flow endpoints:
 - Protected tenant API with mismatched `X-Tenant-ID` fails
 - Invite with all 4 roles works for `COMPANY_ADMIN`
 - Invite `COMPANY_ADMIN` by `HR_MANAGER` is rejected
+- Super Admin `PUT /tenants/:id/configuration` saves modules beyond plan preset
+- User without a tenant module role for a module does not see that module in sidebar/API after re-login (applies to all modules, not one specific module)
 
 ## 10) Canonical Reference Docs
 For deeper detail (optional), see:
@@ -319,8 +458,9 @@ These are enforced behaviors and should not be regressed:
   - If tenant is truly suspended after conversion, login message must indicate payment-related suspension.
 
 - Leave and attendance role behavior:
-  - `HR_MANAGER` can view and approve/reject leave within tenant.
-  - `TEAM_LEAD` can approve/reject leave only for direct reports.
+  - `HR_MANAGER` / `TEAM_LEAD` / `EMPLOYEE` module access comes from **assigned tenant module roles**, not the job title alone.
+  - `HR_MANAGER` can view and approve/reject leave only when assigned `LEAVE` (or equivalent permissions).
+  - `TEAM_LEAD` can approve/reject leave only for direct reports when assigned `LEAVE`.
   - Attendance listing should include employee identity details (`employee.user`) for FE rendering.
 
 - Employee deletion policy:

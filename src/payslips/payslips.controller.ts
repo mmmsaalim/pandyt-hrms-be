@@ -18,9 +18,12 @@ import { CreatePayslipDto } from './dto/create-payslip.dto';
 import { UpdatePayslipDto } from './dto/update-payslip.dto';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
+import { ModuleEnabledGuard } from '../common/guards/module-enabled.guard';
 import { Roles } from '../common/decorators/roles.decorator';
+import { RequireModule } from '../common/decorators/require-module.decorator';
 
-@UseGuards(JwtAuthGuard, RolesGuard)
+@UseGuards(JwtAuthGuard, RolesGuard, ModuleEnabledGuard)
+@RequireModule('payslips')
 @Controller('payslips')
 export class PayslipsController {
   constructor(

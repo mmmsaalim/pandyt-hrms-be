@@ -7,12 +7,17 @@ import { CreateTenantRoleDto } from './dto/create-tenant-role.dto';
 import { SetRolePermissionsDto } from './dto/set-role-permissions.dto';
 import { AssignScopedUserRoleDto } from './dto/assign-scoped-user-role.dto';
 import { UnassignScopedUserRoleDto } from './dto/unassign-scoped-user-role.dto';
+import { TenantConfigurationService } from '../tenant-configuration/tenant-configuration.service';
+import { permissionToModule } from '../tenant-configuration/tenant-configuration.constants';
 
 type RequestUser = { sub: number; roles?: string[]; tenantId?: number | null } | undefined;
 
 @Injectable()
 export class RolesService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly tenantConfigurationService: TenantConfigurationService,
+  ) {}
 
   private async resolveActor(user: RequestUser) {
     if (!user?.sub) {
@@ -118,10 +123,31 @@ export class RolesService {
         : Promise.resolve([]),
     ]);
 
+    let filteredPermissions = permissions;
+    let filteredRoles = roles;
+
+    if (isCompany && actor.tenantId) {
+      const enabledModules = await this.tenantConfigurationService.getEnabledModuleKeys(actor.tenantId);
+      const enabledSet = new Set([...enabledModules, 'configuration']);
+
+      filteredPermissions = permissions.filter((permission) =>
+        enabledSet.has(permissionToModule(permission.module)),
+      );
+
+      filteredRoles = roles.filter((role) => {
+        if (role.tenantId === null) {
+          return true;
+        }
+
+        const moduleKey = role.name.toLowerCase();
+        return enabledSet.has(moduleKey);
+      });
+    }
+
     return {
       managedTenantId: actor.tenantId,
-      permissions,
-      roles,
+      permissions: filteredPermissions,
+      roles: filteredRoles,
       users,
     };
   }
@@ -174,7 +200,12 @@ export class RolesService {
     const actor = await this.resolveActor(user);
     this.ensureCompanyAdmin(actor);
 
+    const enabledModules = await this.tenantConfigurationService.getEnabledModuleKeys(actor.tenantId!);
+
     const permissions = await this.prisma.permission.findMany({
+      where: {
+        module: { in: enabledModules },
+      },
       orderBy: [{ module: 'asc' }, { permission: 'asc' }],
     });
 
