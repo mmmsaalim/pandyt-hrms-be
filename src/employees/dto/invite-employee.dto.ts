@@ -1,11 +1,17 @@
-import { IsEmail, IsIn, IsInt, IsObject, IsOptional, IsString, Min } from 'class-validator';
+import { IsEmail, IsIn, IsInt, IsObject, IsOptional, IsString, Min, ValidateIf } from 'class-validator';
 
 export class InviteEmployeeDto {
   @IsString()
   name!: string;
 
+  @ValidateIf((dto: InviteEmployeeDto) => dto.onboardingMode !== 'MANUAL_ONLY')
   @IsEmail()
-  workEmail!: string;
+  workEmail?: string;
+
+  @IsOptional()
+  @IsString()
+  @IsIn(['EMAIL_INVITE', 'MANUAL_ONLY'])
+  onboardingMode?: 'EMAIL_INVITE' | 'MANUAL_ONLY';
 
   @IsOptional()
   @IsString()

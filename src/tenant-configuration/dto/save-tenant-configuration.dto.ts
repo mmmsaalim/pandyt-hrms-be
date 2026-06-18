@@ -25,6 +25,26 @@ export class TenantLocaleConfigDto {
   @Min(1)
   @Max(12)
   fiscalYearStartMonth?: number;
+
+  @IsOptional()
+  @IsString()
+  payslipTemplateKey?: string;
+
+  @IsOptional()
+  @IsObject()
+  leaveSetup?: {
+    preset?: string;
+    policies?: Array<{
+      code?: string;
+      name: string;
+      days: number;
+      carryForwardLimit?: number;
+      accrualRate?: number;
+      sortOrder?: number;
+      description?: string;
+      genderScope?: string;
+    }>;
+  };
 }
 
 export class SaveTenantConfigurationDto {

@@ -27,14 +27,18 @@ export class TenantsController {
 
   @Get()
   @Roles('SUPER_ADMIN')
-  findAll() {
-    return this.tenantsService.findAll();
+  findAll(
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+    @Query('group') group?: 'active' | 'archived',
+  ) {
+    return this.tenantsService.findAll(page, limit, group);
   }
 
   @Get('payments/overview')
   @Roles('SUPER_ADMIN')
-  paymentsOverview() {
-    return this.tenantsService.paymentsOverview();
+  paymentsOverview(@Query('page') page?: string, @Query('limit') limit?: string) {
+    return this.tenantsService.paymentsOverview(page, limit);
   }
 
   @Post('payments/reminders/overdue')
@@ -75,8 +79,11 @@ export class TenantsController {
   leads(
     @Query('status', new ParseEnumPipe(TenantLeadStatusEnum, { optional: true }))
     status?: TenantLeadStatusEnum,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+    @Query('group') group?: 'active' | 'archived',
   ) {
-    return this.tenantsService.findLeads(status);
+    return this.tenantsService.findLeads(status, page, limit, group);
   }
 
   @Get(':id')

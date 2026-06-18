@@ -7,9 +7,22 @@ export const ALL_BUSINESS_MODULE_KEYS = [
   'payslips',
   'recruitment',
   'reports',
+  'canteen',
 ] as const;
 
 export type BusinessModuleKey = (typeof ALL_BUSINESS_MODULE_KEYS)[number];
+
+export const PLATFORM_MODULE_CATALOG: Array<{ key: BusinessModuleKey; label: string; sortOrder: number }> = [
+  { key: 'employees', label: 'Employees', sortOrder: 1 },
+  { key: 'organisation', label: 'Organisation', sortOrder: 2 },
+  { key: 'leave', label: 'Leave', sortOrder: 3 },
+  { key: 'attendance', label: 'Attendance', sortOrder: 4 },
+  { key: 'payroll', label: 'Payroll', sortOrder: 5 },
+  { key: 'payslips', label: 'Payslips', sortOrder: 6 },
+  { key: 'recruitment', label: 'Recruitment', sortOrder: 7 },
+  { key: 'reports', label: 'Reports', sortOrder: 8 },
+  { key: 'canteen', label: 'Canteen', sortOrder: 9 },
+];
 
 export const PLAN_MODULE_PRESETS: Record<string, BusinessModuleKey[]> = {
   FREEMIUM: ['employees', 'leave'],
@@ -24,6 +37,7 @@ export const PLAN_MODULE_PRESETS: Record<string, BusinessModuleKey[]> = {
     'recruitment',
     'organisation',
     'reports',
+    'canteen',
   ],
   ENTERPRISE: [...ALL_BUSINESS_MODULE_KEYS],
 };
@@ -83,6 +97,10 @@ export const DEFAULT_TENANT_CONFIG = {
   locale: 'en-LK',
   currency: 'LKR',
   fiscalYearStartMonth: 4,
+  payslipTemplateKey: 'STANDARD_LKR',
+  leaveSetup: {
+    preset: 'SRI_LANKA',
+  },
 };
 
 export function normalizePlan(plan: string): string {

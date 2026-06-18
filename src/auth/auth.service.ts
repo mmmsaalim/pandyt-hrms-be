@@ -158,53 +158,15 @@ export class AuthService {
 
     const tenantCode = user.tenant?.companyCode ?? null;
 
-    const permissions = Array.from(
-      new Set(
-        (
-          user.roles as Array<{
-            role: {
-              name: string;
-              tenantId: number | null;
-              rolePermissions: Array<{ permission: { permission: string } }>;
-            };
-          }>
-        ).flatMap((entry) => {
-          const role = entry.role;
-          const permissionKeys = role.rolePermissions.map((rp) => rp.permission.permission);
-
-          // Super admin keeps full platform permissions.
-          if (role.name === 'SUPER_ADMIN') {
-            return permissionKeys;
-          }
-
-          // Company admin owns tenant configuration and full operational access.
-          if (role.name === 'COMPANY_ADMIN' && role.tenantId === null) {
-            return permissionKeys;
-          }
-
-          // HR manager base role is identity only; module access comes from tenant module roles.
-          if (role.name === 'HR_MANAGER' && role.tenantId === null) {
-            return [];
-          }
-
-          // Team lead base role is identity only; module access comes from tenant module roles.
-          if (role.name === 'TEAM_LEAD' && role.tenantId === null) {
-            return [];
-          }
-
-          // Shared employee base role should not auto-grant business module access.
-          if (role.name === 'EMPLOYEE' && role.tenantId === null) {
-            return [];
-          }
-
-          // Tenant module roles grant permissions; configuration is company-admin only.
-          if (role.tenantId !== null && role.name === 'CONFIGURATION') {
-            return roles.includes('COMPANY_ADMIN') ? permissionKeys : [];
-          }
-
-          return permissionKeys;
-        }),
-      ),
+    const permissions = this.resolveUserPermissions(
+      roles,
+      user.roles as Array<{
+        role: {
+          name: string;
+          tenantId: number | null;
+          rolePermissions: Array<{ permission: { permission: string } }>;
+        };
+      }>,
     );
     const payload = {
       sub: user.id,
@@ -350,18 +312,54 @@ export class AuthService {
     return { message: 'Password updated successfully.' };
   }
 
-  async getTenantConfigForUser(user: { sub?: number; tenantId?: number | null } | undefined) {
+  async getTenantConfigForUser(
+    user:
+      | {
+          sub?: number;
+          tenantId?: number | null;
+          permissions?: string[];
+          roles?: string[];
+        }
+      | undefined,
+  ) {
     if (!user?.sub || !user.tenantId) {
       throw new UnauthorizedException('Tenant context is required.');
     }
 
-    const [runtimeConfig, tenant] = await Promise.all([
+    const [runtimeConfig, tenant, dbUser] = await Promise.all([
       this.tenantConfigurationService.getTenantRuntimeConfig(user.tenantId),
       this.prisma.tenant.findUnique({
         where: { id: user.tenantId },
         select: { plan: true, seats: true },
       }),
+      this.prisma.user.findUnique({
+        where: { id: user.sub },
+        include: {
+          roles: {
+            include: {
+              role: {
+                include: {
+                  rolePermissions: {
+                    include: { permission: true },
+                  },
+                },
+              },
+            },
+          },
+        },
+      }),
     ]);
+
+    const roles = (dbUser?.roles ?? []).map((entry) => entry.role.name);
+    const permissions = dbUser
+      ? this.resolveUserPermissions(roles, dbUser.roles)
+      : (user.permissions ?? []);
+    const effectivePermissions = roles.includes('SUPER_ADMIN')
+      ? permissions
+      : this.tenantConfigurationService.getEffectivePermissions(
+          permissions,
+          runtimeConfig.enabledModules,
+        );
 
     return {
       plan: runtimeConfig.plan,
@@ -371,7 +369,55 @@ export class AuthService {
       fiscalYearStartMonth: runtimeConfig.config.fiscalYearStartMonth,
       enabledModules: runtimeConfig.enabledModules,
       fields: runtimeConfig.fieldsByModule,
+      permissions,
+      effectivePermissions,
     };
+  }
+
+  private resolveUserPermissions(
+    roles: string[],
+    userRoles: Array<{
+      role: {
+        name: string;
+        tenantId: number | null;
+        rolePermissions: Array<{ permission: { permission: string } }>;
+      };
+    }>,
+  ): string[] {
+    return Array.from(
+      new Set(
+        userRoles.flatMap((entry) => {
+          const role = entry.role;
+          const permissionKeys = role.rolePermissions.map((rp) => rp.permission.permission);
+
+          if (role.name === 'SUPER_ADMIN') {
+            return permissionKeys;
+          }
+
+          if (role.name === 'COMPANY_ADMIN' && role.tenantId === null) {
+            return permissionKeys;
+          }
+
+          if (role.name === 'HR_MANAGER' && role.tenantId === null) {
+            return [];
+          }
+
+          if (role.name === 'TEAM_LEAD' && role.tenantId === null) {
+            return [];
+          }
+
+          if (role.name === 'EMPLOYEE' && role.tenantId === null) {
+            return [];
+          }
+
+          if (role.tenantId !== null && role.name === 'CONFIGURATION') {
+            return roles.includes('COMPANY_ADMIN') ? permissionKeys : [];
+          }
+
+          return permissionKeys;
+        }),
+      ),
+    );
   }
 
   async signup(dto: SignupDto) {
@@ -381,6 +427,15 @@ export class AuthService {
       adminName: dto.adminName,
       adminEmail: dto.adminEmail,
       subscriptionPlan: 'FREEMIUM',
+      config: {
+        leadDetails: {
+          adminPhone: dto.adminPhone?.trim() || null,
+          employeeCount: dto.employeeCount ?? null,
+          address: dto.address?.trim() || null,
+          source: dto.source?.trim() || 'Free signup page',
+          notes: dto.notes?.trim() || null,
+        },
+      },
     });
 
     return {

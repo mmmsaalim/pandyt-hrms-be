@@ -1,11 +1,15 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, forwardRef, Inject, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { LeaveService } from '../leave/leave.service';
+import { LeaveSetupConfig } from '../leave/leave.constants';
+import { DEFAULT_PAYSLIP_TEMPLATE_KEY } from '../payroll/payslip.constants';
 import { CreateFieldDefinitionDto } from './dto/create-field-definition.dto';
 import { CreateModuleDefinitionDto } from './dto/create-module-definition.dto';
 import { SaveTenantConfigurationDto } from './dto/save-tenant-configuration.dto';
 import {
   ALL_BUSINESS_MODULE_KEYS,
+  PLATFORM_MODULE_CATALOG,
   DEFAULT_PLATFORM_BILLING,
   DEFAULT_TENANT_CONFIG,
   DEFAULT_EMPLOYEE_PROFILE_FIELDS,
@@ -47,7 +51,11 @@ type TxClient = Prisma.TransactionClient;
 
 @Injectable()
 export class TenantConfigurationService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    @Inject(forwardRef(() => LeaveService))
+    private readonly leaveService: LeaveService,
+  ) {}
 
   getEffectivePermissions(userPermissions: string[], enabledModules: string[]): string[] {
     const enabled = new Set(enabledModules);
@@ -149,16 +157,31 @@ export class TenantConfigurationService {
       plan: tenant.plan,
       enabledModules,
       fieldsByModule,
-      config: {
-        locale: typeof rawConfig.locale === 'string' ? rawConfig.locale : DEFAULT_TENANT_CONFIG.locale,
-        currency:
-          typeof rawConfig.currency === 'string' ? rawConfig.currency : DEFAULT_TENANT_CONFIG.currency,
-        fiscalYearStartMonth:
-          typeof rawConfig.fiscalYearStartMonth === 'number'
-            ? rawConfig.fiscalYearStartMonth
-            : DEFAULT_TENANT_CONFIG.fiscalYearStartMonth,
-      },
+      config: this.normalizeTenantConfig(rawConfig),
     };
+  }
+
+  private normalizeTenantConfig(rawConfig: Record<string, unknown>) {
+    const leaveSetupRaw = rawConfig.leaveSetup;
+    const leaveSetup: Prisma.InputJsonValue =
+      leaveSetupRaw && typeof leaveSetupRaw === 'object' && !Array.isArray(leaveSetupRaw)
+        ? (leaveSetupRaw as Prisma.InputJsonValue)
+        : (DEFAULT_TENANT_CONFIG.leaveSetup as Prisma.InputJsonValue);
+
+    return {
+      locale: typeof rawConfig.locale === 'string' ? rawConfig.locale : DEFAULT_TENANT_CONFIG.locale,
+      currency:
+        typeof rawConfig.currency === 'string' ? rawConfig.currency : DEFAULT_TENANT_CONFIG.currency,
+      fiscalYearStartMonth:
+        typeof rawConfig.fiscalYearStartMonth === 'number'
+          ? rawConfig.fiscalYearStartMonth
+          : DEFAULT_TENANT_CONFIG.fiscalYearStartMonth,
+      payslipTemplateKey:
+        typeof rawConfig.payslipTemplateKey === 'string'
+          ? rawConfig.payslipTemplateKey
+          : DEFAULT_TENANT_CONFIG.payslipTemplateKey ?? DEFAULT_PAYSLIP_TEMPLATE_KEY,
+      leaveSetup,
+    } satisfies Record<string, Prisma.InputJsonValue>;
   }
 
   async getTenantConfigurationForAdmin(tenantId: number) {
@@ -178,6 +201,8 @@ export class TenantConfigurationService {
     if (!tenant) {
       throw new NotFoundException('Tenant not found.');
     }
+
+    await this.ensurePlatformModuleCatalog();
 
     const [modules, fields] = await Promise.all([
       this.prisma.moduleDefinition.findMany({
@@ -208,7 +233,7 @@ export class TenantConfigurationService {
       seats: tenant.seats,
       planSeatLimit: seatsForPlan(tenant.plan),
       planDefaultModules: planModules,
-      config: tenant.config ?? DEFAULT_TENANT_CONFIG,
+      config: this.normalizeTenantConfig((tenant.config ?? {}) as Record<string, unknown>),
       modules: modules.map((module) => ({
         key: module.key,
         label: module.label,
@@ -258,21 +283,16 @@ export class TenantConfigurationService {
     // Plan presets are defaults only — Super Admin may enable modules beyond the plan tier.
 
     const existingConfig = (tenant.config ?? {}) as Record<string, unknown>;
+    const normalizedExisting = this.normalizeTenantConfig(existingConfig);
     const nextConfig = {
-      locale:
-        dto.config?.locale ??
-        (typeof existingConfig.locale === 'string' ? existingConfig.locale : DEFAULT_TENANT_CONFIG.locale),
-      currency:
-        dto.config?.currency ??
-        (typeof existingConfig.currency === 'string'
-          ? existingConfig.currency
-          : DEFAULT_TENANT_CONFIG.currency),
+      locale: dto.config?.locale ?? normalizedExisting.locale,
+      currency: dto.config?.currency ?? normalizedExisting.currency,
       fiscalYearStartMonth:
-        dto.config?.fiscalYearStartMonth ??
-        (typeof existingConfig.fiscalYearStartMonth === 'number'
-          ? existingConfig.fiscalYearStartMonth
-          : DEFAULT_TENANT_CONFIG.fiscalYearStartMonth),
-    };
+        dto.config?.fiscalYearStartMonth ?? normalizedExisting.fiscalYearStartMonth,
+      payslipTemplateKey:
+        dto.config?.payslipTemplateKey ?? normalizedExisting.payslipTemplateKey,
+      leaveSetup: dto.config?.leaveSetup ?? normalizedExisting.leaveSetup,
+    } satisfies Record<string, Prisma.InputJsonValue>;
 
     await this.prisma.$transaction(async (tx) => {
       await tx.tenant.update({
@@ -280,13 +300,21 @@ export class TenantConfigurationService {
         data: {
           plan: nextPlan,
           seats: resolveSeatsForPlan(nextPlan),
-          config: nextConfig,
+          config: nextConfig as Prisma.InputJsonValue,
         },
       });
 
       await this.persistModuleSettings(tx, tenantId, requestedModules);
       await this.persistFieldSettings(tx, tenantId, dto.moduleFeatures ?? {}, requestedModules);
     });
+
+    if (requestedModules.includes('leave') && dto.config?.leaveSetup) {
+      await this.leaveService.seedPoliciesForTenant(
+        tenantId,
+        dto.config.leaveSetup as LeaveSetupConfig,
+        { onlyIfEmpty: false },
+      );
+    }
 
     return this.getTenantConfigurationForAdmin(tenantId);
   }
@@ -428,11 +456,34 @@ export class TenantConfigurationService {
     return Object.fromEntries(Object.entries(input).filter(([key]) => allowedKeys.has(key)));
   }
 
-  listPlatformModules() {
+  async ensurePlatformModuleCatalog() {
+    for (const module of PLATFORM_MODULE_CATALOG) {
+      await this.prisma.moduleDefinition.upsert({
+        where: { key: module.key },
+        update: {
+          label: module.label,
+          sortOrder: module.sortOrder,
+          isActive: true,
+        },
+        create: {
+          key: module.key,
+          label: module.label,
+          sortOrder: module.sortOrder,
+          isActive: true,
+        },
+      });
+    }
+  }
+
+  async listPlatformModules() {
+    await this.ensurePlatformModuleCatalog();
+
     return this.prisma.moduleDefinition.findMany({
+      where: { isActive: true },
       orderBy: [{ sortOrder: 'asc' }, { label: 'asc' }],
       include: {
         fields: {
+          where: { isActive: true },
           orderBy: { fieldKey: 'asc' },
         },
       },

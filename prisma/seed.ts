@@ -12,6 +12,7 @@ const ALL_BUSINESS_MODULE_KEYS = [
   'payslips',
   'recruitment',
   'reports',
+  'canteen',
 ] as const;
 
 const modulesForPlan = (plan: string): string[] => {
@@ -30,6 +31,7 @@ const modulesForPlan = (plan: string): string[] => {
       'recruitment',
       'organisation',
       'reports',
+      'canteen',
     ];
   }
   return [...ALL_BUSINESS_MODULE_KEYS];
@@ -71,6 +73,8 @@ async function main() {
     { permission: 'leave.read', module: 'leave', description: 'View leave requests.' },
     { permission: 'leave.manage', module: 'leave', description: 'Approve and reject leave requests.' },
     { permission: 'attendance.read', module: 'attendance', description: 'View attendance records.' },
+    { permission: 'canteen.read', module: 'canteen', description: 'View canteen meal entries.' },
+    { permission: 'canteen.manage', module: 'canteen', description: 'Manage canteen meal entries and settings.' },
     { permission: 'payroll.manage', module: 'payroll', description: 'Manage payroll runs.' },
     { permission: 'payslips.manage', module: 'payslips', description: 'Manage payslips.' },
     { permission: 'reports.read', module: 'reports', description: 'View reports.' },
@@ -138,6 +142,8 @@ async function main() {
       'leave.read',
       'leave.manage',
       'attendance.read',
+      'canteen.read',
+      'canteen.manage',
       'payroll.manage',
       'payslips.manage',
       'reports.read',
@@ -153,6 +159,8 @@ async function main() {
       'leave.read',
       'leave.manage',
       'attendance.read',
+      'canteen.read',
+      'canteen.manage',
       'reports.read',
       'organisation.read',
       'organisation.manage',
@@ -163,6 +171,8 @@ async function main() {
       'leave.read',
       'leave.manage',
       'attendance.read',
+      'canteen.read',
+      'canteen.manage',
       'reports.read',
       'organisation.read',
     ]),
@@ -178,6 +188,7 @@ async function main() {
     { key: 'payslips', label: 'Payslips', sortOrder: 6 },
     { key: 'recruitment', label: 'Recruitment', sortOrder: 7 },
     { key: 'reports', label: 'Reports', sortOrder: 8 },
+    { key: 'canteen', label: 'Canteen', sortOrder: 9 },
   ];
 
   for (const module of moduleCatalog) {

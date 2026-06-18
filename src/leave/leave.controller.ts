@@ -33,6 +33,12 @@ export class LeaveController {
   }
 
   // --- Leave Policies ---
+  @Get('presets')
+  @Roles('SUPER_ADMIN', 'COMPANY_ADMIN', 'HR_MANAGER')
+  getPresets() {
+    return this.leaveService.getLeavePresets();
+  }
+
   @Get('policies')
   @Roles('COMPANY_ADMIN', 'EMPLOYEE', 'HR_MANAGER')
   findAllPolicies(@Req() req: { user?: { sub: number; roles?: string[] } }) {

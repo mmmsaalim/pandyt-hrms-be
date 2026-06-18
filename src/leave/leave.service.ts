@@ -2,6 +2,14 @@ import { ForbiddenException, Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateLeaveRequestDto } from './dto/create-leave-request.dto';
 import { UpdateLeaveRequestDto } from './dto/update-leave-request.dto';
+import {
+  LeaveSetupConfig,
+  resolveLeavePolicies,
+  SRI_LANKA_LEAVE_POLICIES,
+  SRI_LANKA_LEAVE_PRESET_KEY,
+} from './leave.constants';
+
+export type { LeaveSetupConfig } from './leave.constants';
 
 type RequestUser = { sub: number; roles?: string[] } | undefined;
 
@@ -100,14 +108,18 @@ export class LeaveService {
       employeeId = requesterContext.id;
     }
 
-    if (this.hasRole(user, 'COMPANY_ADMIN')) {
+    if (this.hasRole(user, 'COMPANY_ADMIN') || this.hasRole(user, 'HR_MANAGER') || this.hasRole(user, 'TEAM_LEAD')) {
       const targetEmployee = await this.prisma.employee.findUnique({
         where: { id: employeeId },
-        select: { tenantId: true },
+        select: { tenantId: true, managerId: true },
       });
 
       if (!targetEmployee || targetEmployee.tenantId !== requesterContext.tenantId) {
         throw new ForbiddenException('Cannot create leave for another tenant.');
+      }
+
+      if (this.hasRole(user, 'TEAM_LEAD') && targetEmployee.managerId !== requesterContext.id) {
+        throw new ForbiddenException('Team lead can only create leave for direct reports.');
       }
     }
 
@@ -304,9 +316,85 @@ export class LeaveService {
     const context = await this.getEmployeeContext(user!.sub);
     if (!context) throw new ForbiddenException('Employee profile not found.');
 
+    await this.ensureDefaultLeavePolicies(context.tenantId);
+
     return this.prisma.leavePolicy.findMany({
-      where: { tenantId: context.tenantId },
+      where: { tenantId: context.tenantId, isActive: true },
+      orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
     });
+  }
+
+  getLeavePresets() {
+    return {
+      presetKey: SRI_LANKA_LEAVE_PRESET_KEY,
+      policies: SRI_LANKA_LEAVE_POLICIES,
+    };
+  }
+
+  async seedPoliciesForTenant(
+    tenantId: number,
+    setup?: LeaveSetupConfig | null,
+    options?: { onlyIfEmpty?: boolean },
+  ) {
+    if (options?.onlyIfEmpty) {
+      const existingCount = await this.prisma.leavePolicy.count({ where: { tenantId } });
+      if (existingCount > 0) {
+        return { seeded: false, reason: 'already_configured' as const };
+      }
+    }
+
+    const policies = resolveLeavePolicies(setup);
+
+    for (const policy of policies) {
+      await this.prisma.leavePolicy.upsert({
+        where: {
+          tenantId_code: {
+            tenantId,
+            code: policy.code,
+          },
+        },
+        update: {
+          name: policy.name,
+          days: policy.days,
+          carryForwardLimit: policy.carryForwardLimit,
+          accrualRate: policy.accrualRate,
+          sortOrder: policy.sortOrder,
+          description: policy.description ?? null,
+          genderScope: policy.genderScope ?? 'ALL',
+          isActive: true,
+        },
+        create: {
+          tenantId,
+          code: policy.code,
+          name: policy.name,
+          days: policy.days,
+          carryForwardLimit: policy.carryForwardLimit,
+          accrualRate: policy.accrualRate,
+          sortOrder: policy.sortOrder,
+          description: policy.description ?? null,
+          genderScope: policy.genderScope ?? 'ALL',
+          isActive: true,
+        },
+      });
+    }
+
+    return { seeded: true, count: policies.length };
+  }
+
+  async syncPoliciesFromTenantConfig(tenantId: number) {
+    const tenant = await this.prisma.tenant.findUnique({
+      where: { id: tenantId },
+      select: { config: true },
+    });
+
+    if (!tenant) {
+      return { seeded: false, reason: 'tenant_not_found' as const };
+    }
+
+    const config = (tenant.config ?? {}) as Record<string, unknown>;
+    const leaveSetup = config.leaveSetup as LeaveSetupConfig | undefined;
+
+    return this.seedPoliciesForTenant(tenantId, leaveSetup, { onlyIfEmpty: false });
   }
 
   async createPolicy(dto: { name: string; days: number; carryForwardLimit?: number; accrualRate?: number }, user: RequestUser) {
@@ -321,10 +409,16 @@ export class LeaveService {
     });
   }
 
+  private async ensureDefaultLeavePolicies(tenantId: number) {
+    await this.seedPoliciesForTenant(tenantId, null, { onlyIfEmpty: true });
+  }
+
   // --- Leave Balances ---
   async getBalances(employeeId?: number, user?: RequestUser) {
     const context = await this.getEmployeeContext(user!.sub);
     if (!context) throw new ForbiddenException('Employee profile not found.');
+
+    await this.ensureDefaultLeavePolicies(context.tenantId);
 
     let targetEmployeeId = employeeId;
     if (this.hasRole(user, 'EMPLOYEE')) {

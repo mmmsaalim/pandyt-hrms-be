@@ -173,6 +173,8 @@ model Tenant {
   billingDispatchLogs BillingReminderDispatch[]
   moduleSettings TenantModuleSetting[]
   fieldSettings  TenantFieldSetting[]
+  canteenSettings CanteenSettings?
+  canteenMealEntries CanteenMealEntry[]
 }
 
 model ModuleDefinition {
@@ -296,6 +298,8 @@ model Employee {
   salary           Float            @default(0)
   employmentStatus EmploymentStatus @default(ACTIVE)
   deletedAt        DateTime?
+  offboardingReason String?
+  offboardedAt     DateTime?
   departmentId     Int?
   teamId           Int?
   locationId       Int?
@@ -313,6 +317,45 @@ model Employee {
   attendance       Attendance[]
   payslips         Payslip[]
   leaveBalances    LeaveBalance[]
+  canteenMealEntries CanteenMealEntry[]
+}
+
+model CanteenSettings {
+  id                       Int      @id @default(autoincrement())
+  tenantId                 Int      @unique
+  enabled                  Boolean  @default(true)
+  defaultMealCost          Float    @default(0)
+  salaryDeduct             Boolean  @default(false)
+  autoAssignFromAttendance Boolean  @default(false)
+  mealTypes                Json     @default("[]")
+  defaultMealCounts        Json     @default("{}")
+  notes                    String?
+  createdAt                DateTime @default(now())
+  updatedAt                DateTime @updatedAt
+  tenant                   Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@map("canteen_settings")
+}
+
+model CanteenMealEntry {
+  id               Int      @id @default(autoincrement())
+  tenantId         Int
+  employeeId       Int
+  date             DateTime
+  mealCount        Int      @default(1)
+  mealCost         Float    @default(0)
+  mealBreakdown    Json?
+  totalCost        Float    @default(0)
+  deductFromSalary Boolean  @default(false)
+  notes            String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+  tenant           Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  employee         Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@unique([employeeId, date])
+  @@index([tenantId, date])
+  @@map("canteen_meal_entries")
 }
 
 model LeaveRequest {
@@ -443,12 +486,19 @@ model Team {
 model LeavePolicy {
   id                Int            @id @default(autoincrement())
   tenantId          Int
+  code              String?
   name              String
   days              Float
   carryForwardLimit Float          @default(0)
   accrualRate       Float          @default(0)
+  sortOrder         Int            @default(0)
+  isActive          Boolean        @default(true)
+  description       String?
+  genderScope       String         @default("ALL")
   tenant            Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   leaveBalances     LeaveBalance[]
+
+  @@unique([tenantId, code])
 }
 
 model LeaveBalance {

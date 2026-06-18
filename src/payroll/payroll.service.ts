@@ -58,7 +58,7 @@ export class PayrollService {
   private async assertOwnership(id: number, tenantId: number) {
     const row = await this.prisma.payrollRun.findUnique({
       where: { id },
-      select: { tenantId: true, status: true },
+      select: { tenantId: true, status: true, period: true },
     });
     if (!row || row.tenantId !== tenantId) {
       throw new ForbiddenException('Cannot access payroll for another tenant.');
@@ -128,21 +128,52 @@ export class PayrollService {
     // Delete any pre-existing payslips for this run (re-process safety)
     await this.prisma.payslip.deleteMany({ where: { payrollRunId: id } });
 
+    const [periodYear, periodMonth] = run.period.split('-').map((value) => Number(value));
+    const canteenDeductionByEmployee = new Map<number, number>();
+    if (Number.isInteger(periodYear) && Number.isInteger(periodMonth)) {
+      const startDate = new Date(periodYear, periodMonth - 1, 1);
+      const endDate = new Date(periodYear, periodMonth, 1);
+      const canteenEntries = await this.prisma.canteenMealEntry.findMany({
+        where: {
+          tenantId,
+          deductFromSalary: true,
+          date: {
+            gte: startDate,
+            lt: endDate,
+          },
+        },
+        select: {
+          employeeId: true,
+          totalCost: true,
+        },
+      });
+
+      for (const entry of canteenEntries) {
+        canteenDeductionByEmployee.set(
+          entry.employeeId,
+          (canteenDeductionByEmployee.get(entry.employeeId) ?? 0) + entry.totalCost,
+        );
+      }
+    }
+
     const payslipData = employees.map((emp) => {
-      const { grossPay, epfEmployee, epfEmployer, etfEmployer, payeTax, deductions, netPay } =
+      const statutory =
         calculateStatutory(emp.salary, 0);
-      totalGross += grossPay;
+      const canteenDeduction = Math.round((canteenDeductionByEmployee.get(emp.id) ?? 0) * 100) / 100;
+      const deductions = Math.round((statutory.deductions + canteenDeduction) * 100) / 100;
+      const netPay = Math.round((statutory.grossPay - deductions) * 100) / 100;
+      totalGross += statutory.grossPay;
       totalNet += netPay;
       return {
         employeeId: emp.id,
         payrollRunId: id,
         basicPay: emp.salary,
         allowances: 0,
-        grossPay,
-        epfEmployee,
-        epfEmployer,
-        etfEmployer,
-        payeTax,
+        grossPay: statutory.grossPay,
+        epfEmployee: statutory.epfEmployee,
+        epfEmployer: statutory.epfEmployer,
+        etfEmployer: statutory.etfEmployer,
+        payeTax: statutory.payeTax,
         deductions,
         netPay,
         status: 'GENERATED' as const,

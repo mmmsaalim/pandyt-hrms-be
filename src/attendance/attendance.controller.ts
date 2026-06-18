@@ -28,7 +28,7 @@ export class AttendanceController {
   constructor(private readonly attendanceService: AttendanceService) {}
 
   @Get()
-  @Roles('COMPANY_ADMIN', 'HR_MANAGER', 'EMPLOYEE')
+  @Roles('COMPANY_ADMIN', 'HR_MANAGER', 'TEAM_LEAD', 'EMPLOYEE')
   @RequirePermissions('attendance.read')
   findAll(@Req() req: { user?: { sub: number; roles?: string[] } }) {
     return this.attendanceService.findAll(req.user);
@@ -49,7 +49,7 @@ export class AttendanceController {
   }
 
   @Post('override')
-  @Roles('COMPANY_ADMIN', 'HR_MANAGER')
+  @Roles('COMPANY_ADMIN', 'HR_MANAGER', 'TEAM_LEAD')
   @RequirePermissions('attendance.read')
   override(
     @Body()

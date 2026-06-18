@@ -74,3 +74,10 @@ export type SendBillingReminderEmailInput = {
   bodyTemplate?: string;
   supportEmail?: string;
 };
+
+export type SendOffboardingEmailInput = {
+  to: string;
+  fullName: string;
+  companyName: string;
+  reason: string;
+};

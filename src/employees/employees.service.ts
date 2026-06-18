@@ -14,6 +14,8 @@ import { UpdateEmployeeDto } from './dto/update-employee.dto';
 import { InviteEmployeeDto } from './dto/invite-employee.dto';
 import { InvitationsService } from '../invitations/invitations.service';
 import { TenantConfigurationService } from '../tenant-configuration/tenant-configuration.service';
+import { EmailService } from '../email/email.service';
+import { OffboardEmployeeDto } from './dto/offboard-employee.dto';
 
 type RequestUser = { sub: number; roles?: string[] } | undefined;
 type TxClient = Prisma.TransactionClient;
@@ -24,18 +26,56 @@ export class EmployeesService {
     private readonly prisma: PrismaService,
     private readonly invitationsService: InvitationsService,
     private readonly tenantConfigurationService: TenantConfigurationService,
+    private readonly emailService: EmailService,
   ) {}
 
-  private async mapEmployeeResponse<T extends { tenantId: number; customFields?: unknown }>(employee: T) {
+  private isManualOnlyEmail(email?: string | null): boolean {
+    return Boolean(email?.trim().toLowerCase().endsWith('@no-email.flowhr.local'));
+  }
+
+  private async mapEmployeeResponse<T extends { tenantId: number; customFields?: unknown; user?: { email?: string; status?: string } }>(
+    employee: T,
+  ) {
     const runtimeConfig = await this.tenantConfigurationService.getTenantRuntimeConfig(employee.tenantId);
+    const isManualOnly = this.isManualOnlyEmail(employee.user?.email);
     return {
       ...employee,
+      isManualOnly,
+      loginEnabled: !isManualOnly && employee.user?.status === 'ACTIVE',
       customFields: this.tenantConfigurationService.filterCustomFieldsForRead(
         runtimeConfig,
         'employees',
         employee.customFields,
       ),
     };
+  }
+
+  private buildTenantCodePrefix(
+    companyCode: string | null | undefined,
+    tenantName: string,
+    tenantId: number,
+  ): string {
+    const fromCode = (companyCode ?? '')
+      .replace(/[^a-zA-Z0-9]/g, '')
+      .slice(0, 6)
+      .toUpperCase();
+    if (fromCode) {
+      return fromCode;
+    }
+
+    const fromName = tenantName
+      .replace(/[^a-zA-Z0-9]/g, '')
+      .slice(0, 4)
+      .toUpperCase();
+    if (fromName) {
+      return fromName;
+    }
+
+    return `T${tenantId}`;
+  }
+
+  private escapeRegex(value: string): string {
+    return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   }
 
   private hasRole(user: RequestUser, role: string): boolean {
@@ -204,8 +244,16 @@ export class EmployeesService {
       throw new ForbiddenException('Employee profile not found for this user.');
     }
 
+    const where: Prisma.EmployeeWhereInput = {
+      tenantId: adminContext.tenantId,
+      deletedAt: null,
+      ...(this.hasRole(user, 'TEAM_LEAD') && !this.hasRole(user, 'COMPANY_ADMIN') && !this.hasRole(user, 'HR_MANAGER')
+        ? { managerId: adminContext.id }
+        : {}),
+    };
+
     const rows = await this.prisma.employee.findMany({
-      where: { tenantId: adminContext.tenantId, deletedAt: null },
+      where,
       include: {
         user: {
           include: {
@@ -317,16 +365,10 @@ export class EmployeesService {
     });
   }
 
-  private buildEmployeeCode(name: string, tenantId: number): string {
-    const seed = name.replace(/[^a-zA-Z0-9]/g, '').slice(0, 4).toUpperCase() || 'EMP';
-    const suffix = randomBytes(3).toString('hex').toUpperCase();
-    return `TEN${tenantId}-${seed}-${suffix}`;
-  }
-
   private async resolveEmployeeCode(
     tx: TxClient,
     tenantId: number,
-    name: string,
+    _name: string,
     requestedCode?: string,
   ): Promise<string> {
     const manualCode = requestedCode?.trim();
@@ -343,13 +385,34 @@ export class EmployeesService {
       return manualCode;
     }
 
-    for (let attempts = 0; attempts < 10; attempts += 1) {
-      const generated = this.buildEmployeeCode(name, tenantId);
+    const tenant = await tx.tenant.findUnique({
+      where: { id: tenantId },
+      select: { companyCode: true, name: true },
+    });
+    const prefix = this.buildTenantCodePrefix(tenant?.companyCode, tenant?.name ?? '', tenantId);
+    const employees = await tx.employee.findMany({
+      where: {
+        tenantId,
+        employeeCode: { startsWith: `${prefix}-` },
+      },
+      select: { employeeCode: true },
+    });
+
+    let maxSequence = 0;
+    const pattern = new RegExp(`^${this.escapeRegex(prefix)}-(\\d+)$`);
+    for (const row of employees) {
+      const match = row.employeeCode.match(pattern);
+      if (match) {
+        maxSequence = Math.max(maxSequence, Number(match[1]));
+      }
+    }
+
+    for (let offset = 1; offset <= 20; offset += 1) {
+      const generated = `${prefix}-${String(maxSequence + offset).padStart(3, '0')}`;
       const existing = await tx.employee.findUnique({
         where: { employeeCode: generated },
         select: { id: true },
       });
-
       if (!existing) {
         return generated;
       }
@@ -393,12 +456,22 @@ export class EmployeesService {
       throw new ForbiddenException(`Invalid role: ${dto.role}`);
     }
 
-    const normalizedEmail = dto.workEmail.trim().toLowerCase();
+    const onboardingMode = dto.onboardingMode ?? 'EMAIL_INVITE';
+    const normalizedEmail =
+      onboardingMode === 'MANUAL_ONLY'
+        ? ''
+        : dto.workEmail?.trim().toLowerCase() ?? '';
 
-    const existingUser = await this.prisma.user.findUnique({
-      where: { email: normalizedEmail },
-      select: { id: true },
-    });
+    if (onboardingMode !== 'MANUAL_ONLY' && !normalizedEmail) {
+      throw new BadRequestException('Work email is required for email invite onboarding.');
+    }
+
+    const existingUser = normalizedEmail
+      ? await this.prisma.user.findUnique({
+          where: { email: normalizedEmail },
+          select: { id: true },
+        })
+      : null;
 
     if (existingUser) {
       throw new ConflictException('A user with this work email address already exists.');
@@ -420,7 +493,7 @@ export class EmployeesService {
 
     const [firstName, ...lastNameParts] = dto.name.trim().split(/\s+/);
     const lastName = lastNameParts.join(' ') || 'User';
-    const temporaryPassword = 'admin@123';
+    const temporaryPassword = randomBytes(12).toString('hex');
     const temporaryPasswordHash = await bcrypt.hash(temporaryPassword, 10);
 
     const tenant = await this.prisma.tenant.findUnique({
@@ -457,9 +530,9 @@ export class EmployeesService {
     // Define module access per role
     const moduleAccessMap: Record<string, string[]> = {
       EMPLOYEE: ['attendance', 'leave', 'payslips', 'reports'],
-      TEAM_LEAD: ['attendance', 'leave', 'reports'],
-      HR_MANAGER: ['employees', 'leave', 'attendance', 'payroll', 'payslips', 'reports', 'recruitment'],
-      COMPANY_ADMIN: ['employees', 'leave', 'attendance', 'payroll', 'payslips', 'reports', 'recruitment', 'configuration'],
+      TEAM_LEAD: ['attendance', 'leave', 'reports', 'canteen'],
+      HR_MANAGER: ['employees', 'leave', 'attendance', 'payroll', 'payslips', 'reports', 'recruitment', 'canteen'],
+      COMPANY_ADMIN: ['employees', 'leave', 'attendance', 'payroll', 'payslips', 'reports', 'recruitment', 'configuration', 'canteen'],
     };
 
     const modulesForRole = (moduleAccessMap[requestedRole] || moduleAccessMap.EMPLOYEE).filter((module) =>
@@ -467,13 +540,24 @@ export class EmployeesService {
     );
 
     const result = await this.prisma.$transaction(async (tx) => {
+      const employeeCode = await this.resolveEmployeeCode(
+        tx,
+        adminContext.tenantId,
+        dto.name,
+        dto.employeeCode,
+      );
+      const userEmail =
+        onboardingMode === 'MANUAL_ONLY'
+          ? `manual-${adminContext.tenantId}-${employeeCode.toLowerCase()}@no-email.flowhr.local`
+          : normalizedEmail;
+
       const createdUser = await tx.user.create({
         data: {
-          email: normalizedEmail,
+          email: userEmail,
           passwordHash: temporaryPasswordHash,
           firstName: firstName || 'Employee',
           lastName,
-          status: 'ACTIVE',
+          status: onboardingMode === 'MANUAL_ONLY' ? 'INACTIVE' : 'ACTIVE',
           tenantId: adminContext.tenantId,
         },
       });
@@ -487,13 +571,6 @@ export class EmployeesService {
 
       // Assign module-based access for the role
       await this.ensureModuleAccess(tx, adminContext.tenantId, createdUser.id, modulesForRole);
-
-      const employeeCode = await this.resolveEmployeeCode(
-        tx,
-        adminContext.tenantId,
-        dto.name,
-        dto.employeeCode,
-      );
 
       const orgAssignment = await this.resolveOrgAssignment(
         adminContext.tenantId,
@@ -526,19 +603,120 @@ export class EmployeesService {
       return { createdUser, employee };
     });
 
-    const invitation = await this.invitationsService.createAndSendInvitation({
-      tenantId: adminContext.tenantId,
-      userId: result.createdUser.id,
-      email: result.createdUser.email,
-      role: requestedRole,
-      fullName: dto.name,
-      companyName: tenant.name,
-    });
+    const invitation =
+      onboardingMode === 'MANUAL_ONLY'
+        ? null
+        : await this.invitationsService.createAndSendInvitation({
+            tenantId: adminContext.tenantId,
+            userId: result.createdUser.id,
+            email: result.createdUser.email,
+            role: requestedRole,
+            fullName: dto.name,
+            companyName: tenant.name,
+          });
 
     return {
       employee: result.employee,
       invitation,
-      temporaryPassword,
+      onboardingMode,
+      employeeCode: result.employee.employeeCode,
+      temporaryPassword: onboardingMode === 'MANUAL_ONLY' ? undefined : temporaryPassword,
+    };
+  }
+
+  async enableEmployeeLogin(id: number, workEmail: string, user: RequestUser) {
+    if (!user?.sub) {
+      throw new ForbiddenException('Unauthorized role access.');
+    }
+
+    const isCompanyAdmin = this.hasRole(user, 'COMPANY_ADMIN');
+    const isHRManager = this.hasRole(user, 'HR_MANAGER');
+    if (!isCompanyAdmin && !isHRManager) {
+      throw new ForbiddenException('Only COMPANY_ADMIN or HR_MANAGER can enable employee login.');
+    }
+
+    const adminContext = await this.getEmployeeContext(user.sub);
+    if (!adminContext) {
+      throw new ForbiddenException('Employee profile not found for this user.');
+    }
+
+    const normalizedEmail = workEmail.trim().toLowerCase();
+    if (!normalizedEmail) {
+      throw new BadRequestException('Work email is required.');
+    }
+
+    const targetEmployee = await this.prisma.employee.findUnique({
+      where: { id },
+      include: {
+        user: {
+          include: {
+            roles: {
+              include: {
+                role: { select: { name: true } },
+              },
+            },
+          },
+        },
+        tenant: { select: { id: true, name: true } },
+      },
+    });
+
+    if (!targetEmployee || targetEmployee.deletedAt) {
+      throw new NotFoundException('Employee not found.');
+    }
+
+    if (targetEmployee.tenantId !== adminContext.tenantId) {
+      throw new ForbiddenException('Cannot update employee from another tenant.');
+    }
+
+    if (!this.isManualOnlyEmail(targetEmployee.user.email)) {
+      throw new BadRequestException('This employee already has a real login email.');
+    }
+
+    const existingUser = await this.prisma.user.findUnique({
+      where: { email: normalizedEmail },
+      select: { id: true },
+    });
+    if (existingUser && existingUser.id !== targetEmployee.userId) {
+      throw new ConflictException('A user with this work email already exists.');
+    }
+
+    const identityRole =
+      targetEmployee.user.roles.find((entry) => entry.role.name !== 'CONFIGURATION')?.role.name ?? 'EMPLOYEE';
+
+    await this.prisma.user.update({
+      where: { id: targetEmployee.userId },
+      data: {
+        email: normalizedEmail,
+        status: 'ACTIVE',
+      },
+    });
+
+    const invitation = await this.invitationsService.createAndSendInvitation({
+      tenantId: targetEmployee.tenantId,
+      userId: targetEmployee.userId,
+      email: normalizedEmail,
+      role: identityRole,
+      fullName: `${targetEmployee.user.firstName} ${targetEmployee.user.lastName}`.trim(),
+      companyName: targetEmployee.tenant.name,
+    });
+
+    const refreshed = await this.prisma.employee.findUnique({
+      where: { id },
+      include: {
+        user: {
+          include: {
+            roles: { include: { role: { select: { name: true } } } },
+          },
+        },
+        tenant: true,
+      },
+    });
+
+    return {
+      employee: refreshed ? await this.mapEmployeeResponse(refreshed) : null,
+      invitation,
+      message: 'Login enabled. Invitation email sent so the employee can set a password.',
     };
   }
 
@@ -619,8 +797,17 @@ export class EmployeesService {
   }
 
   async remove(id: number, user: RequestUser) {
+    return this.offboard(id, user, { reason: 'Offboarded by administrator.' });
+  }
+
+  async offboard(id: number, user: RequestUser, dto: OffboardEmployeeDto) {
     if (!user?.sub) {
       throw new ForbiddenException('Unauthorized role access.');
+    }
+
+    const reason = dto.reason?.trim();
+    if (!reason) {
+      throw new BadRequestException('Offboarding reason is required.');
     }
 
     const isSuperAdmin = this.hasRole(user, 'SUPER_ADMIN');
@@ -634,6 +821,9 @@ export class EmployeesService {
           deletedAt: true,
           user: {
             select: {
+              email: true,
+              firstName: true,
+              lastName: true,
               roles: {
                 include: {
                   role: {
@@ -644,6 +834,9 @@ export class EmployeesService {
                 },
               },
             },
+          },
+          tenant: {
+            select: { name: true },
           },
         },
       }),
@@ -668,10 +861,16 @@ export class EmployeesService {
       throw new ForbiddenException('Only SUPER_ADMIN can remove a COMPANY_ADMIN user.');
     }
 
-    return this.prisma.$transaction(async (tx) => {
-      const updatedEmp = await tx.employee.update({
+    const updatedEmp = await this.prisma.$transaction(async (tx) => {
+      const updated = await tx.employee.update({
         where: { id },
-        data: { deletedAt: new Date() },
+        data: {
+          deletedAt: new Date(),
+          offboardedAt: new Date(),
+          offboardingReason: reason,
+          employmentStatus: 'INACTIVE',
+          salary: 0,
+        },
       });
 
       await tx.user.update({
@@ -679,8 +878,24 @@ export class EmployeesService {
         data: { status: 'INACTIVE' },
       });
 
-      return updatedEmp;
+      return updated;
     });
+
+    const email = targetEmployee.user?.email?.trim();
+    if (email && !email.endsWith('@no-email.flowhr.local')) {
+      try {
+        await this.emailService.sendOffboardingEmail({
+          to: email,
+          fullName: `${targetEmployee.user?.firstName ?? ''} ${targetEmployee.user?.lastName ?? ''}`.trim() || 'Employee',
+          companyName: targetEmployee.tenant?.name ?? 'Your company',
+          reason,
+        });
+      } catch {
+        // Offboarding should succeed even if email delivery fails.
+      }
+    }
+
+    return updatedEmp;
   }
 
   async anonymize(id: number, user: RequestUser) {

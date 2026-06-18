@@ -11,6 +11,9 @@ import { TenantLeadStatusEnum } from './dto/create-tenant.dto';
 import { CreateCompanyWithAdminDto } from './dto/create-company-with-admin.dto';
 import { UpdateBillingSettingsDto } from './dto/update-billing-settings.dto';
 import { TenantConfigurationService } from '../tenant-configuration/tenant-configuration.service';
+import { LeaveService } from '../leave/leave.service';
+import { LeaveSetupConfig } from '../leave/leave.constants';
+import { DEFAULT_PAYSLIP_TEMPLATE_KEY } from '../payroll/payslip.constants';
 import { SaveTenantConfigurationDto } from '../tenant-configuration/dto/save-tenant-configuration.dto';
 import {
   DEFAULT_TENANT_CONFIG,
@@ -18,6 +21,7 @@ import {
   normalizePlan,
   resolveSeatsForPlan,
 } from '../tenant-configuration/tenant-configuration.constants';
+import { buildPaginatedResult, parsePaginationQuery } from '../common/pagination';
 
 type TxClient = Prisma.TransactionClient;
 
@@ -31,6 +35,7 @@ export class TenantsService {
     private readonly config: ConfigService,
     private readonly emailService: EmailService,
     private readonly tenantConfigurationService: TenantConfigurationService,
+    private readonly leaveService: LeaveService,
   ) {}
 
   private normalizeCompanyCode(raw: string): string {
@@ -217,38 +222,62 @@ export class TenantsService {
     }
   }
 
-  async findAll() {
-    const rows = await this.prisma.tenant.findMany({
-      orderBy: { createdAt: 'desc' },
-      include: {
-        _count: {
-          select: {
-            users: true,
+  private tenantListWhere(group?: 'active' | 'archived'): Prisma.TenantWhereInput | undefined {
+    if (group === 'active') {
+      return {
+        OR: [{ leadStatus: 'PENDING' }, { status: 'ACTIVE' }],
+      };
+    }
+
+    if (group === 'archived') {
+      return {
+        OR: [{ leadStatus: 'DELETED' }, { status: 'SUSPENDED', leadStatus: { not: 'PENDING' } }],
+      };
+    }
+
+    return undefined;
+  }
+
+  async findAll(page?: string | number, limit?: string | number, group?: 'active' | 'archived') {
+    const pagination = parsePaginationQuery(page, limit);
+    const where = this.tenantListWhere(group);
+    const [rows, total] = await Promise.all([
+      this.prisma.tenant.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        skip: pagination.skip,
+        take: pagination.limit,
+        include: {
+          _count: {
+            select: {
+              users: true,
+            },
           },
-        },
-        users: {
-          where: {
-            roles: {
-              some: {
-                role: {
-                  name: 'COMPANY_ADMIN',
+          users: {
+            where: {
+              roles: {
+                some: {
+                  role: {
+                    name: 'COMPANY_ADMIN',
+                  },
                 },
               },
             },
-          },
-          orderBy: { createdAt: 'asc' },
-          select: {
-            id: true,
-            email: true,
-            status: true,
-            firstName: true,
-            lastName: true,
+            orderBy: { createdAt: 'asc' },
+            select: {
+              id: true,
+              email: true,
+              status: true,
+              firstName: true,
+              lastName: true,
+            },
           },
         },
-      },
-    });
+      }),
+      this.prisma.tenant.count({ where }),
+    ]);
 
-    return rows.map((row) => ({
+    const items = rows.map((row) => ({
       id: row.id,
       name: row.name,
       companyCode: row.companyCode,
@@ -260,28 +289,42 @@ export class TenantsService {
       usersCount: row._count.users,
       companyAdmin: row.users[0] ?? null,
     }));
+
+    return buildPaginatedResult(items, total, pagination.page, pagination.limit);
   }
 
-  async findLeads(status?: TenantLeadStatusEnum) {
-    const rows = await this.prisma.tenant.findMany({
-      where: status ? { leadStatus: status } : undefined,
-      orderBy: { createdAt: 'desc' },
-      include: {
-        invitations: {
-          where: { role: 'COMPANY_ADMIN' },
-          orderBy: { invitedAt: 'desc' },
-          select: {
-            id: true,
-            status: true,
-            invitedAt: true,
-            acceptedAt: true,
-            expiresAt: true,
+  async findLeads(
+    status?: TenantLeadStatusEnum,
+    page?: string | number,
+    limit?: string | number,
+    group?: 'active' | 'archived',
+  ) {
+    const pagination = parsePaginationQuery(page, limit);
+    const where = status ? { leadStatus: status } : this.tenantListWhere(group);
+    const [rows, total] = await Promise.all([
+      this.prisma.tenant.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        skip: pagination.skip,
+        take: pagination.limit,
+        include: {
+          invitations: {
+            where: { role: 'COMPANY_ADMIN' },
+            orderBy: { invitedAt: 'desc' },
+            select: {
+              id: true,
+              status: true,
+              invitedAt: true,
+              acceptedAt: true,
+              expiresAt: true,
+            },
           },
         },
-      },
-    });
+      }),
+      this.prisma.tenant.count({ where }),
+    ]);
 
-    return rows.map((row) => {
+    const items = rows.map((row) => {
       const latestAdminInvitation = row.invitations[0] ?? null;
       const pendingAdminInvitations = row.invitations.filter(
         (invitation) => invitation.status === 'PENDING',
@@ -296,16 +339,25 @@ export class TenantsService {
         leadStatus: row.leadStatus,
         seats: row.seats,
         createdAt: row.createdAt,
+        leadDetails:
+          row.config && typeof row.config === 'object' && !Array.isArray(row.config)
+            ? (row.config as Record<string, unknown>)['leadDetails'] ?? null
+            : null,
         latestAdminInvitation,
         pendingAdminInvitations,
       };
     });
+
+    return buildPaginatedResult(items, total, pagination.page, pagination.limit);
   }
 
-  async paymentsOverview() {
-    const [tenants, billingConfig] = await Promise.all([
+  async paymentsOverview(page?: string | number, limit?: string | number) {
+    const pagination = parsePaginationQuery(page, limit);
+    const [tenants, total, billingConfig] = await Promise.all([
       this.prisma.tenant.findMany({
         orderBy: { createdAt: 'desc' },
+        skip: pagination.skip,
+        take: pagination.limit,
         include: {
           _count: {
             select: {
@@ -319,10 +371,12 @@ export class TenantsService {
           },
         },
       }),
+      this.prisma.tenant.count(),
       this.tenantConfigurationService.getPlatformBillingConfig(),
     ]);
 
-    return tenants.map((tenant) => this.toPaymentOverviewRow(tenant, billingConfig));
+    const items = tenants.map((tenant) => this.toPaymentOverviewRow(tenant, billingConfig));
+    return buildPaginatedResult(items, total, pagination.page, pagination.limit);
   }
 
   async sendOverdueReminder(tenantId: number) {
@@ -856,6 +910,13 @@ export class TenantsService {
       currency: dto.config?.currency ?? DEFAULT_TENANT_CONFIG.currency,
       fiscalYearStartMonth:
         dto.config?.fiscalYearStartMonth ?? DEFAULT_TENANT_CONFIG.fiscalYearStartMonth,
+      payslipTemplateKey:
+        (dto.config as Record<string, unknown> | undefined)?.['payslipTemplateKey'] ??
+        DEFAULT_TENANT_CONFIG.payslipTemplateKey ??
+        DEFAULT_PAYSLIP_TEMPLATE_KEY,
+      leaveSetup:
+        (dto.config as Record<string, unknown> | undefined)?.['leaveSetup'] ??
+        DEFAULT_TENANT_CONFIG.leaveSetup,
     };
 
     const result = await this.prisma.$transaction(async (tx) => {
@@ -906,6 +967,14 @@ export class TenantsService {
 
       return { tenant, user };
     });
+
+    if (enabledModules.includes('leave')) {
+      await this.leaveService.seedPoliciesForTenant(
+        result.tenant.id,
+        tenantConfig.leaveSetup as LeaveSetupConfig,
+        { onlyIfEmpty: true },
+      );
+    }
 
     const setupToken = await this.createPasswordSetupToken(result.user.id);
 
@@ -1014,6 +1083,24 @@ export class TenantsService {
           `Activation email could not be sent to ${admin.email}: ${error instanceof Error ? error.message : 'unknown error'}`,
         );
       }
+    }
+
+    const leaveModule = await this.prisma.tenantModuleSetting.findUnique({
+      where: { tenantId_moduleKey: { tenantId: id, moduleKey: 'leave' } },
+      select: { enabled: true },
+    });
+
+    if (leaveModule?.enabled) {
+      const tenant = await this.prisma.tenant.findUnique({
+        where: { id },
+        select: { config: true },
+      });
+      const config = (tenant?.config ?? {}) as Record<string, unknown>;
+      await this.leaveService.seedPoliciesForTenant(
+        id,
+        config.leaveSetup as LeaveSetupConfig,
+        { onlyIfEmpty: true },
+      );
     }
 
     return {

@@ -9,6 +9,8 @@ import { Roles } from '../common/decorators/roles.decorator';
 import { RequireModule } from '../common/decorators/require-module.decorator';
 import { Req } from '@nestjs/common';
 import { InviteEmployeeDto } from './dto/invite-employee.dto';
+import { OffboardEmployeeDto } from './dto/offboard-employee.dto';
+import { EnableEmployeeLoginDto } from './dto/enable-employee-login.dto';
 
 @UseGuards(JwtAuthGuard, RolesGuard, ModuleEnabledGuard)
 @RequireModule('employees')
@@ -17,7 +19,7 @@ export class EmployeesController {
   constructor(private readonly employeesService: EmployeesService) {}
 
   @Get()
-  @Roles('COMPANY_ADMIN', 'HR_MANAGER')
+  @Roles('COMPANY_ADMIN', 'HR_MANAGER', 'TEAM_LEAD')
   findAll(@Req() req: { user?: { sub: number; roles?: string[] } }) {
     return this.employeesService.findAll(req.user);
   }
@@ -74,8 +76,28 @@ export class EmployeesController {
     return this.employeesService.update(id, dto, req.user);
   }
 
+  @Post(':id/enable-login')
+  @Roles('COMPANY_ADMIN', 'HR_MANAGER')
+  enableLogin(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: EnableEmployeeLoginDto,
+    @Req() req: { user?: { sub: number; roles?: string[] } },
+  ) {
+    return this.employeesService.enableEmployeeLogin(id, dto.workEmail, req.user);
+  }
+
+  @Post(':id/offboard')
+  @Roles('COMPANY_ADMIN', 'HR_MANAGER', 'SUPER_ADMIN')
+  offboard(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: OffboardEmployeeDto,
+    @Req() req: { user?: { sub: number; roles?: string[] } },
+  ) {
+    return this.employeesService.offboard(id, req.user, dto);
+  }
+
   @Delete(':id')
-  @Roles('COMPANY_ADMIN', 'SUPER_ADMIN')
+  @Roles('COMPANY_ADMIN', 'HR_MANAGER', 'SUPER_ADMIN')
   remove(
     @Param('id', ParseIntPipe) id: number,
     @Req() req: { user?: { sub: number; roles?: string[] } },

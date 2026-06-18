@@ -31,5 +31,5 @@ export class CreateCompanyWithAdminDto {
   moduleFeatures?: SaveTenantConfigurationDto['moduleFeatures'];
 
   @IsOptional()
-  config?: SaveTenantConfigurationDto['config'];
+  config?: SaveTenantConfigurationDto['config'] & Record<string, unknown>;
 }

@@ -2,6 +2,7 @@ import {
   SendAccountActivationEmailInput,
   SendBillingReminderEmailInput,
   SendInvitationEmailInput,
+  SendOffboardingEmailInput,
   SendOnboardingEmailInput,
   SendOverduePaymentReminderEmailInput,
   SendPasswordResetEmailInput,
@@ -198,6 +199,28 @@ export function buildBillingReminderEmail(input: SendBillingReminderEmailInput) 
     `Due date: ${input.renewalDate}`,
     `Days left: ${input.daysLeft}`,
     `Sign in: ${input.loginUrl}`,
+  ].join('\n\n');
+
+  return { subject, html, text };
+}
+
+export function buildOffboardingEmail(input: SendOffboardingEmailInput) {
+  const subject = `Your ${input.companyName} HR account has been offboarded`;
+  const html = baseLayout(
+    subject,
+    `
+      <p style="margin:0 0 16px;">Hello ${input.fullName},</p>
+      <p style="margin:0 0 16px;">Your employment with <strong>${input.companyName}</strong> has ended and your HR system login has been disabled.</p>
+      <p style="margin:0 0 8px;"><strong>Reason provided:</strong></p>
+      <p style="margin:0 0 16px;padding:12px 14px;background:#fff9f4;border-radius:10px;border:1px solid #f1d9c6;">${input.reason}</p>
+      <p style="margin:0;">You will no longer receive payslips or be included in payroll runs. If you believe this is a mistake, contact your company HR team.</p>
+    `,
+  );
+
+  const text = [
+    `Hello ${input.fullName},`,
+    `Your employment with ${input.companyName} has ended and your login has been disabled.`,
+    `Reason: ${input.reason}`,
   ].join('\n\n');
 
   return { subject, html, text };

@@ -9,12 +9,14 @@ import {
   buildOnboardingEmail,
   buildOverduePaymentReminderEmail,
   buildPasswordResetEmail,
+  buildOffboardingEmail,
 } from './email.templates';
 import {
   EmailProviderName,
   SendAccountActivationEmailInput,
   SendBillingReminderEmailInput,
   SendInvitationEmailInput,
+  SendOffboardingEmailInput,
   SendOnboardingEmailInput,
   SendOverduePaymentReminderEmailInput,
   SendPasswordResetEmailInput,
@@ -280,6 +282,11 @@ export class EmailService {
 
   async sendBillingReminderEmail(input: SendBillingReminderEmailInput) {
     const template = buildBillingReminderEmail(input);
+    return this.dispatchEmail(template.subject, template.html, template.text, input.to);
+  }
+
+  async sendOffboardingEmail(input: SendOffboardingEmailInput) {
+    const template = buildOffboardingEmail(input);
     return this.dispatchEmail(template.subject, template.html, template.text, input.to);
   }
 }

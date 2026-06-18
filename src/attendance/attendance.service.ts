@@ -44,6 +44,18 @@ export class AttendanceService {
       });
     }
 
+    if (this.hasRole(user, 'TEAM_LEAD')) {
+      return this.prisma.attendance.findMany({
+        where: {
+          employee: {
+            tenantId: employeeContext.tenantId,
+            managerId: employeeContext.id,
+          },
+        },
+        include: { employee: { include: { user: true } } },
+      });
+    }
+
     throw new ForbiddenException('Insufficient role permission.');
   }
 
@@ -157,11 +169,15 @@ export class AttendanceService {
 
     const targetEmployee = await this.prisma.employee.findUnique({
       where: { id: dto.employeeId },
-      select: { tenantId: true },
+      select: { tenantId: true, managerId: true },
     });
 
     if (!targetEmployee || targetEmployee.tenantId !== adminContext.tenantId) {
       throw new ForbiddenException('Cannot override attendance for another tenant employee.');
+    }
+
+    if (this.hasRole(user, 'TEAM_LEAD') && targetEmployee.managerId !== adminContext.id) {
+      throw new ForbiddenException('Team lead can only override attendance for direct reports.');
     }
 
     const date = new Date(dto.date);

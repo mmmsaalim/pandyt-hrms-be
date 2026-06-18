@@ -19,6 +19,7 @@ import { EmailModule } from './email/email.module';
 import { OrganisationModule } from './organisation/organisation.module';
 import { CrossTenantReportsModule } from './cross-tenant-reports/cross-tenant-reports.module';
 import { TenantConfigurationModule } from './tenant-configuration/tenant-configuration.module';
+import { CanteenModule } from './canteen/canteen.module';
 
 @Module({
   imports: [
@@ -41,6 +42,7 @@ import { TenantConfigurationModule } from './tenant-configuration/tenant-configu
     EmailModule,
     InvitationsModule,
     OrganisationModule,
+    CanteenModule,
     CrossTenantReportsModule,
   ],
   providers: [],
