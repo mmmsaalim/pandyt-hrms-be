@@ -40,7 +40,7 @@ export class LeaveController {
   }
 
   @Get('policies')
-  @Roles('COMPANY_ADMIN', 'EMPLOYEE', 'HR_MANAGER')
+  @Roles('COMPANY_ADMIN', 'EMPLOYEE', 'HR_MANAGER', 'TEAM_LEAD')
   findAllPolicies(@Req() req: { user?: { sub: number; roles?: string[] } }) {
     return this.leaveService.findAllPolicies(req.user);
   }

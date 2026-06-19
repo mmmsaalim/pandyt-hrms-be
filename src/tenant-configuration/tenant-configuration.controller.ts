@@ -6,6 +6,7 @@ import { CreateFieldDefinitionDto } from './dto/create-field-definition.dto';
 import { CreateModuleDefinitionDto } from './dto/create-module-definition.dto';
 import { SaveTenantConfigurationDto } from './dto/save-tenant-configuration.dto';
 import { SavePlatformBillingDto } from './dto/save-platform-billing.dto';
+import { SavePlatformPlansDto } from './dto/save-platform-plans.dto';
 import { TenantConfigurationService } from './tenant-configuration.service';
 
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -21,6 +22,13 @@ export class TenantConfigurationController {
 
   @Get('platform/plans')
   listPlatformPlans() {
+    return this.tenantConfigurationService.listPlatformPlans();
+  }
+
+  @Put('platform/plans')
+  @Roles('SUPER_ADMIN')
+  async savePlatformPlans(@Body() dto: SavePlatformPlansDto) {
+    await this.tenantConfigurationService.savePlatformPlanCatalog(dto);
     return this.tenantConfigurationService.listPlatformPlans();
   }
 

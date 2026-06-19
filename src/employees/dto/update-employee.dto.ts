@@ -41,6 +41,12 @@ export class UpdateEmployeeDto {
   salary?: number;
 
   @IsOptional()
+  @ValidateIf((_, value) => value !== null)
+  @IsInt()
+  @Min(1)
+  managerId?: number | null;
+
+  @IsOptional()
   @IsObject()
   customFields?: Record<string, unknown>;
 }

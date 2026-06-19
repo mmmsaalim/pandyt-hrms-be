@@ -40,6 +40,11 @@ export class InviteEmployeeDto {
   role!: 'EMPLOYEE' | 'HR_MANAGER' | 'TEAM_LEAD' | 'COMPANY_ADMIN';
 
   @IsOptional()
+  @IsInt()
+  @Min(1)
+  managerId?: number;
+
+  @IsOptional()
   @IsString()
   employeeCode?: string;
 

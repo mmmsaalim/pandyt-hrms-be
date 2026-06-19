@@ -259,6 +259,15 @@ export class AttendanceService {
       }
     }
 
+    const targetEmployee = await this.prisma.employee.findUnique({
+      where: { id: employeeId },
+      select: { tenantId: true },
+    });
+
+    if (!targetEmployee) {
+      throw new ForbiddenException('Employee not found.');
+    }
+
     return this.prisma.attendance.create({
       data: {
         employeeId,

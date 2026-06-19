@@ -104,7 +104,19 @@ export const DEFAULT_TENANT_CONFIG = {
 };
 
 export function normalizePlan(plan: string): string {
-  return plan.trim().toUpperCase();
+  const normalized = plan.trim().toUpperCase();
+  const aliases: Record<string, string> = {
+    BASIC: 'STARTER',
+    STANDARD: 'STARTER',
+    PRO: 'GROWTH',
+  };
+  return aliases[normalized] ?? normalized;
+}
+
+export function planLabel(plan: string): string {
+  const normalized = normalizePlan(plan);
+  const match = PLAN_CATALOG.find((entry) => entry.key === normalized);
+  return match?.label ?? plan.trim();
 }
 
 export function modulesForPlan(plan: string): BusinessModuleKey[] {
@@ -138,6 +150,22 @@ export function permissionToModule(permission: string): string {
 }
 
 export const PLATFORM_BILLING_KEY = 'billing';
+export const PLATFORM_PLANS_KEY = 'subscription_plans';
+
+export type PlatformPlanCatalogEntry = {
+  key: string;
+  label: string;
+  seats: number | null;
+  priceLkr: number | null;
+  description: string;
+  defaultModules: string[];
+  sortOrder: number;
+  isActive: boolean;
+};
+
+export type PlatformPlanCatalogConfig = {
+  plans: PlatformPlanCatalogEntry[];
+};
 
 export type PlatformBillingPlanConfig = {
   monthlyPriceLkr: number | null;
@@ -153,10 +181,10 @@ export type PlatformBillingConfig = {
 export const DEFAULT_PLATFORM_BILLING: PlatformBillingConfig = {
   taxRate: 0.18,
   overageSeatPriceLkr: 500,
-  plans: {
-    FREEMIUM: { monthlyPriceLkr: 0, seats: 10 },
-    STARTER: { monthlyPriceLkr: 4000, seats: 50 },
-    GROWTH: { monthlyPriceLkr: 12000, seats: 200 },
-    ENTERPRISE: { monthlyPriceLkr: null, seats: null },
-  },
+  plans: Object.fromEntries(
+    PLAN_CATALOG.map((plan) => [
+      plan.key,
+      { monthlyPriceLkr: plan.priceLkr, seats: plan.seats },
+    ]),
+  ),
 };

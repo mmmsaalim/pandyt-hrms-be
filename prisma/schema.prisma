@@ -359,18 +359,20 @@ model CanteenMealEntry {
 }
 
 model LeaveRequest {
-  id           Int         @id @default(autoincrement())
-  employeeId   Int
-  type         String
-  startDate    DateTime
-  endDate      DateTime
-  days         Float
-  reason       String
-  status       LeaveStatus @default(PENDING)
-  createdAt    DateTime    @default(now())
-  employee     Employee    @relation(fields: [employeeId], references: [id], onDelete: Cascade)
-  approvedById Int?
-  approvedBy   Employee?   @relation("ApprovedLeaves", fields: [approvedById], references: [id], onDelete: SetNull)
+  id               Int         @id @default(autoincrement())
+  employeeId       Int
+  type             String
+  startDate        DateTime
+  endDate          DateTime
+  days             Float
+  reason           String
+  status           LeaveStatus @default(PENDING)
+  approvalComment  String?
+  rejectionReason  String?
+  createdAt        DateTime    @default(now())
+  employee         Employee    @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  approvedById     Int?
+  approvedBy       Employee?   @relation("ApprovedLeaves", fields: [approvedById], references: [id], onDelete: SetNull)
 }
 
 model Attendance {

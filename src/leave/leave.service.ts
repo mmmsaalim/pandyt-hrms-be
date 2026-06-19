@@ -1,4 +1,4 @@
-import { ForbiddenException, Injectable } from '@nestjs/common';
+import { ForbiddenException, Injectable, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateLeaveRequestDto } from './dto/create-leave-request.dto';
 import { UpdateLeaveRequestDto } from './dto/update-leave-request.dto';
@@ -11,7 +11,7 @@ import {
 
 export type { LeaveSetupConfig } from './leave.constants';
 
-type RequestUser = { sub: number; roles?: string[] } | undefined;
+type RequestUser = { sub: number; roles?: string[]; effectivePermissions?: string[] } | undefined;
 
 @Injectable()
 export class LeaveService {
@@ -19,6 +19,18 @@ export class LeaveService {
 
   private hasRole(user: RequestUser, role: string): boolean {
     return (user?.roles ?? []).includes(role);
+  }
+
+  private hasPermission(user: RequestUser, permission: string): boolean {
+    return (user?.effectivePermissions ?? []).includes(permission);
+  }
+
+  private isLeavePeriodEnded(endDate: Date): boolean {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const leaveEnd = new Date(endDate);
+    leaveEnd.setHours(0, 0, 0, 0);
+    return leaveEnd < today;
   }
 
   private async getEmployeeContext(userId: number) {
@@ -38,49 +50,39 @@ export class LeaveService {
       throw new ForbiddenException('Employee profile not found for this user.');
     }
 
+    if (this.hasRole(user, 'COMPANY_ADMIN') || this.hasRole(user, 'HR_MANAGER')) {
+      return this.prisma.leaveRequest.findMany({
+        where: { employee: { tenantId: employeeContext.tenantId } },
+        orderBy: { createdAt: 'desc' },
+        include: {
+          employee: { include: { user: true } },
+          approvedBy: { include: { user: true } },
+        },
+      });
+    }
+
+    if (this.hasRole(user, 'TEAM_LEAD')) {
+      const canManageAll = this.hasPermission(user, 'leave.manage');
+      return this.prisma.leaveRequest.findMany({
+        where: canManageAll
+          ? { employee: { tenantId: employeeContext.tenantId } }
+          : {
+              employee: {
+                tenantId: employeeContext.tenantId,
+                managerId: employeeContext.id,
+              },
+            },
+        orderBy: { createdAt: 'desc' },
+        include: {
+          employee: { include: { user: true } },
+          approvedBy: { include: { user: true } },
+        },
+      });
+    }
+
     if (this.hasRole(user, 'EMPLOYEE')) {
       return this.prisma.leaveRequest.findMany({
         where: { employeeId: employeeContext.id },
-        orderBy: { createdAt: 'desc' },
-        include: {
-          employee: { include: { user: true } },
-          approvedBy: { include: { user: true } },
-        },
-      });
-    }
-
-    if (this.hasRole(user, 'COMPANY_ADMIN')) {
-      return this.prisma.leaveRequest.findMany({
-        where: { employee: { tenantId: employeeContext.tenantId } },
-        orderBy: { createdAt: 'desc' },
-        include: {
-          employee: { include: { user: true } },
-          approvedBy: { include: { user: true } },
-        },
-      });
-    }
-
-    // HR_MANAGER: can see leave requests for their department/tenant
-    if (this.hasRole(user, 'HR_MANAGER')) {
-      return this.prisma.leaveRequest.findMany({
-        where: { employee: { tenantId: employeeContext.tenantId } },
-        orderBy: { createdAt: 'desc' },
-        include: {
-          employee: { include: { user: true } },
-          approvedBy: { include: { user: true } },
-        },
-      });
-    }
-
-    // TEAM_LEAD: can see leave requests only from direct reports (team members)
-    if (this.hasRole(user, 'TEAM_LEAD')) {
-      return this.prisma.leaveRequest.findMany({
-        where: {
-          employee: {
-            tenantId: employeeContext.tenantId,
-            managerId: employeeContext.id,
-          },
-        },
         orderBy: { createdAt: 'desc' },
         include: {
           employee: { include: { user: true } },
@@ -118,7 +120,11 @@ export class LeaveService {
         throw new ForbiddenException('Cannot create leave for another tenant.');
       }
 
-      if (this.hasRole(user, 'TEAM_LEAD') && targetEmployee.managerId !== requesterContext.id) {
+      if (
+        this.hasRole(user, 'TEAM_LEAD') &&
+        !this.hasPermission(user, 'leave.manage') &&
+        targetEmployee.managerId !== requesterContext.id
+      ) {
         throw new ForbiddenException('Team lead can only create leave for direct reports.');
       }
     }
@@ -199,28 +205,49 @@ export class LeaveService {
       throw new ForbiddenException('Cannot update leave for another tenant.');
     }
 
-    // Authorization check for managers
-    if (this.hasRole(user, 'TEAM_LEAD')) {
-      // Team lead can only approve leave for their direct reports
-      if (leaveRequest.employee.managerId !== adminEmployeeContext.id) {
-        throw new ForbiddenException('Team lead can only approve leave for direct reports.');
-      }
-    }
-
-    if (this.hasRole(user, 'HR_MANAGER')) {
-      // HR Manager authorization is at tenant level, already checked above
-      // They can approve leave for anyone in their tenant
-    }
-
     const originalStatus = leaveRequest.status;
     const newStatus = dto.status;
 
+    if (newStatus === 'APPROVED' || newStatus === 'REJECTED') {
+      if (!this.hasPermission(user, 'leave.manage')) {
+        throw new ForbiddenException('leave.manage permission is required to approve or reject leave.');
+      }
+
+      if (originalStatus === 'PENDING' && this.isLeavePeriodEnded(leaveRequest.endDate)) {
+        throw new BadRequestException(
+          'Cannot approve or reject leave after the leave period has ended.',
+        );
+      }
+
+      if (newStatus === 'REJECTED' && !dto.rejectionReason?.trim()) {
+        throw new BadRequestException('Rejection reason is required when rejecting leave.');
+      }
+    }
+
     return this.prisma.$transaction(async (tx) => {
-      const updateData: any = { ...dto };
-      if (newStatus === 'APPROVED' || newStatus === 'REJECTED') {
+      const updateData: {
+        status?: typeof newStatus;
+        approvedById?: number | null;
+        approvalComment?: string | null;
+        rejectionReason?: string | null;
+      } = {};
+
+      if (newStatus) {
+        updateData.status = newStatus;
+      }
+
+      if (newStatus === 'APPROVED') {
         updateData.approvedById = adminEmployeeContext.id;
+        updateData.approvalComment = dto.approvalComment?.trim() || null;
+        updateData.rejectionReason = null;
+      } else if (newStatus === 'REJECTED') {
+        updateData.approvedById = adminEmployeeContext.id;
+        updateData.rejectionReason = dto.rejectionReason!.trim();
+        updateData.approvalComment = null;
       } else if (newStatus === 'PENDING') {
         updateData.approvedById = null;
+        updateData.approvalComment = null;
+        updateData.rejectionReason = null;
       }
 
       const updated = await tx.leaveRequest.update({

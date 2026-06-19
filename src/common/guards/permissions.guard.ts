@@ -42,7 +42,19 @@ export class PermissionsGuard implements CanActivate {
       ? user.effectivePermissions
       : user.permissions ?? [];
 
-    const allowed = requiredPermissions.some((permission) => activePermissions.includes(permission));
+    const allowed = requiredPermissions.some((permission) => {
+      if (activePermissions.includes(permission)) {
+        return true;
+      }
+
+      const readMatch = permission.match(/^([a-z_]+)\.read$/);
+      if (readMatch) {
+        const moduleRole = readMatch[1].toUpperCase();
+        return (user.roles ?? []).includes(moduleRole);
+      }
+
+      return false;
+    });
 
     if (!allowed) {
       throw new ForbiddenException('Insufficient permission.');

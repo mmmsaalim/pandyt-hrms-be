@@ -82,6 +82,35 @@ export class EmployeesService {
     return (user?.roles ?? []).includes(role);
   }
 
+  private async resolveManagerId(
+    tenantId: number,
+    managerId: number | null | undefined,
+    employeeId?: number,
+  ): Promise<number | null | undefined> {
+    if (managerId === undefined) {
+      return undefined;
+    }
+
+    if (managerId === null) {
+      return null;
+    }
+
+    const manager = await this.prisma.employee.findFirst({
+      where: { id: managerId, tenantId, deletedAt: null },
+      select: { id: true },
+    });
+
+    if (!manager) {
+      throw new NotFoundException('Reporting manager not found in this tenant.');
+    }
+
+    if (employeeId && managerId === employeeId) {
+      throw new BadRequestException('An employee cannot be their own manager.');
+    }
+
+    return managerId;
+  }
+
   private async resolveOrgAssignment(
     tenantId: number,
     input: {
@@ -270,6 +299,7 @@ export class EmployeesService {
         departmentRelation: { select: { id: true, name: true } },
         team: { select: { id: true, name: true } },
         location: { select: { id: true, name: true } },
+        manager: { select: { id: true, employeeCode: true, user: { select: { firstName: true, lastName: true } } } },
       },
       orderBy: { joinedDate: 'desc' },
     });
@@ -583,6 +613,8 @@ export class EmployeesService {
         { requireDepartment: true },
       );
 
+      const managerId = await this.resolveManagerId(adminContext.tenantId, dto.managerId);
+
       const employee = await tx.employee.create({
         data: {
           tenantId: adminContext.tenantId,
@@ -596,6 +628,7 @@ export class EmployeesService {
           joinedDate: new Date(),
           employmentStatus: 'ACTIVE',
           customFields: validatedCustomFields as Prisma.InputJsonValue,
+          ...(managerId !== undefined ? { managerId } : {}),
         },
         include: { user: true, tenant: true },
       });
@@ -790,6 +823,10 @@ export class EmployeesService {
         'employees',
         dto.customFields,
       ) as Prisma.InputJsonValue;
+    }
+
+    if (dto.managerId !== undefined) {
+      updateData.managerId = await this.resolveManagerId(adminContext.tenantId, dto.managerId, id);
     }
 
     const updated = await this.prisma.employee.update({ where: { id }, data: updateData });

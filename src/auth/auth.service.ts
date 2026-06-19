@@ -186,8 +186,14 @@ export class AuthService {
     if (user.tenantId) {
       tenantConfig = await this.tenantConfigurationService.getTenantRuntimeConfig(user.tenantId);
       payload.enabledModules = tenantConfig.enabledModules;
-      payload.effectivePermissions = this.tenantConfigurationService.getEffectivePermissions(
+      const expandedPermissions = this.tenantConfigurationService.expandModuleRoleReadAccess(
         permissions,
+        roles,
+        tenantConfig.enabledModules,
+      );
+      payload.permissions = expandedPermissions;
+      payload.effectivePermissions = this.tenantConfigurationService.getEffectivePermissions(
+        expandedPermissions,
         tenantConfig.enabledModules,
       );
     }
@@ -203,7 +209,7 @@ export class AuthService {
         tenantName: user.tenant?.name ?? null,
         tenantCode,
         roles,
-        permissions,
+        permissions: payload.permissions ?? permissions,
         enabledModules: payload.enabledModules,
         effectivePermissions: payload.effectivePermissions,
         tenantConfig: tenantConfig
@@ -354,10 +360,15 @@ export class AuthService {
     const permissions = dbUser
       ? this.resolveUserPermissions(roles, dbUser.roles)
       : (user.permissions ?? []);
+    const expandedPermissions = this.tenantConfigurationService.expandModuleRoleReadAccess(
+      permissions,
+      roles,
+      runtimeConfig.enabledModules,
+    );
     const effectivePermissions = roles.includes('SUPER_ADMIN')
-      ? permissions
+      ? expandedPermissions
       : this.tenantConfigurationService.getEffectivePermissions(
-          permissions,
+          expandedPermissions,
           runtimeConfig.enabledModules,
         );
 
@@ -369,8 +380,9 @@ export class AuthService {
       fiscalYearStartMonth: runtimeConfig.config.fiscalYearStartMonth,
       enabledModules: runtimeConfig.enabledModules,
       fields: runtimeConfig.fieldsByModule,
-      permissions,
+      permissions: expandedPermissions,
       effectivePermissions,
+      roles,
     };
   }
 

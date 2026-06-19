@@ -15,7 +15,10 @@ import {
   DEFAULT_EMPLOYEE_PROFILE_FIELDS,
   PLAN_CATALOG,
   PLATFORM_BILLING_KEY,
+  PLATFORM_PLANS_KEY,
   PlatformBillingConfig,
+  PlatformPlanCatalogConfig,
+  PlatformPlanCatalogEntry,
   modulesForPlan,
   normalizePlan,
   isUnlimitedPlan,
@@ -24,6 +27,7 @@ import {
   seatsForPlan,
 } from './tenant-configuration.constants';
 import { SavePlatformBillingDto } from './dto/save-platform-billing.dto';
+import { SavePlatformPlansDto } from './dto/save-platform-plans.dto';
 
 export type TenantFieldRuntimeConfig = {
   fieldKey: string;
@@ -51,6 +55,8 @@ type TxClient = Prisma.TransactionClient;
 
 @Injectable()
 export class TenantConfigurationService {
+  private planCatalogCache: PlatformPlanCatalogEntry[] | null = null;
+
   constructor(
     private readonly prisma: PrismaService,
     @Inject(forwardRef(() => LeaveService))
@@ -67,6 +73,25 @@ export class TenantConfigurationService {
       }
       return enabled.has(module);
     });
+  }
+
+  /** Assigning a tenant module role (e.g. ATTENDANCE) grants read access to that module. */
+  expandModuleRoleReadAccess(
+    userPermissions: string[],
+    roleNames: string[],
+    enabledModules: string[],
+  ): string[] {
+    const enabled = new Set(enabledModules);
+    const merged = new Set(userPermissions);
+
+    for (const roleName of roleNames) {
+      const moduleKey = roleName.trim().toLowerCase();
+      if (enabled.has(moduleKey)) {
+        merged.add(`${moduleKey}.read`);
+      }
+    }
+
+    return Array.from(merged);
   }
 
   async getEnabledModuleKeys(tenantId: number): Promise<string[]> {
@@ -86,7 +111,7 @@ export class TenantConfigurationService {
         return [];
       }
 
-      return modulesForPlan(tenant.plan);
+      return this.resolvePlanModules(tenant.plan);
     }
 
     return rows.map((row) => row.moduleKey);
@@ -225,13 +250,13 @@ export class TenantConfigurationService {
       fields.map((row) => [`${row.moduleKey}:${row.fieldKey}`, row]),
     );
 
-    const planModules = modulesForPlan(tenant.plan);
+    const planModules = await this.resolvePlanModules(tenant.plan);
 
     return {
       tenantId: tenant.id,
       plan: tenant.plan,
       seats: tenant.seats,
-      planSeatLimit: seatsForPlan(tenant.plan),
+      planSeatLimit: await this.resolvePlanSeatLimit(tenant.plan),
       planDefaultModules: planModules,
       config: this.normalizeTenantConfig((tenant.config ?? {}) as Record<string, unknown>),
       modules: modules.map((module) => ({
@@ -267,7 +292,7 @@ export class TenantConfigurationService {
     }
 
     const nextPlan = dto.plan ? normalizePlan(dto.plan) : normalizePlan(tenant.plan);
-    const planDefaultModules = modulesForPlan(nextPlan);
+    const planDefaultModules = await this.resolvePlanModules(nextPlan);
     const requestedModules = dto.enabledModules?.length
       ? dto.enabledModules.map((key) => key.trim().toLowerCase())
       : planDefaultModules;
@@ -327,7 +352,7 @@ export class TenantConfigurationService {
     const normalizedPlan = normalizePlan(plan);
     const enabledModules = overrides?.enabledModules?.length
       ? overrides.enabledModules
-      : modulesForPlan(normalizedPlan);
+      : await this.resolvePlanModules(normalizedPlan);
 
     return this.saveTenantConfiguration(tenantId, {
       plan: normalizedPlan,
@@ -490,11 +515,187 @@ export class TenantConfigurationService {
     });
   }
 
-  listPlatformPlans() {
-    return PLAN_CATALOG.map((plan) => ({
-      ...plan,
-      defaultModules: modulesForPlan(plan.key),
+  buildDefaultPlanCatalog(): PlatformPlanCatalogEntry[] {
+    return PLAN_CATALOG.map((plan, index) => ({
+      key: plan.key,
+      label: plan.label,
+      seats: plan.seats,
+      priceLkr: plan.priceLkr,
+      description: plan.description,
+      defaultModules: [...modulesForPlan(plan.key)],
+      sortOrder: index + 1,
+      isActive: true,
     }));
+  }
+
+  private normalizePlanCatalogEntry(raw: Partial<PlatformPlanCatalogEntry>, index: number): PlatformPlanCatalogEntry | null {
+    const key = normalizePlan(String(raw.key ?? ''));
+    if (!key) {
+      return null;
+    }
+
+    const defaultModules = Array.isArray(raw.defaultModules)
+      ? raw.defaultModules.map((moduleKey) => moduleKey.trim().toLowerCase()).filter(Boolean)
+      : modulesForPlan(key);
+
+    return {
+      key,
+      label: String(raw.label ?? key).trim() || key,
+      seats: raw.seats === null ? null : typeof raw.seats === 'number' ? raw.seats : seatsForPlan(key),
+      priceLkr: raw.priceLkr === null ? null : typeof raw.priceLkr === 'number' ? raw.priceLkr : null,
+      description: String(raw.description ?? '').trim(),
+      defaultModules,
+      sortOrder: typeof raw.sortOrder === 'number' ? raw.sortOrder : index + 1,
+      isActive: raw.isActive !== false,
+    };
+  }
+
+  async getPlatformPlanCatalog(forceRefresh = false): Promise<PlatformPlanCatalogEntry[]> {
+    if (!forceRefresh && this.planCatalogCache) {
+      return this.planCatalogCache;
+    }
+
+    const row = await this.prisma.platformSetting.findUnique({
+      where: { key: PLATFORM_PLANS_KEY },
+    });
+
+    if (row?.value && typeof row.value === 'object' && !Array.isArray(row.value)) {
+      const stored = row.value as PlatformPlanCatalogConfig;
+      if (Array.isArray(stored.plans) && stored.plans.length) {
+        this.planCatalogCache = stored.plans
+          .map((plan, index) => this.normalizePlanCatalogEntry(plan, index))
+          .filter((plan): plan is PlatformPlanCatalogEntry => plan !== null)
+          .sort((a, b) => a.sortOrder - b.sortOrder);
+        return this.planCatalogCache;
+      }
+    }
+
+    const defaults = this.buildDefaultPlanCatalog();
+    await this.prisma.platformSetting.upsert({
+      where: { key: PLATFORM_PLANS_KEY },
+      update: {},
+      create: {
+        key: PLATFORM_PLANS_KEY,
+        value: { plans: defaults } as unknown as Prisma.InputJsonValue,
+      },
+    });
+
+    this.planCatalogCache = defaults;
+    return defaults;
+  }
+
+  planLabelFromCatalog(catalog: PlatformPlanCatalogEntry[], plan: string): string {
+    const normalized = normalizePlan(plan);
+    return catalog.find((entry) => entry.key === normalized)?.label ?? plan.trim();
+  }
+
+  async resolvePlanLabel(plan: string): Promise<string> {
+    const catalog = await this.getPlatformPlanCatalog();
+    return this.planLabelFromCatalog(catalog, plan);
+  }
+
+  async resolvePlanModules(plan: string): Promise<string[]> {
+    const catalog = await this.getPlatformPlanCatalog();
+    const normalized = normalizePlan(plan);
+    const match = catalog.find((entry) => entry.key === normalized && entry.isActive);
+    if (match?.defaultModules?.length) {
+      return match.defaultModules;
+    }
+    return modulesForPlan(plan);
+  }
+
+  async resolvePlanSeatLimit(plan: string): Promise<number> {
+    const catalog = await this.getPlatformPlanCatalog();
+    const normalized = normalizePlan(plan);
+    const match = catalog.find((entry) => entry.key === normalized && entry.isActive);
+    if (match?.seats === null) {
+      return 999999;
+    }
+    if (typeof match?.seats === 'number') {
+      return match.seats;
+    }
+    return seatsForPlan(plan);
+  }
+
+  async listPlatformPlans() {
+    const [catalog, billing] = await Promise.all([
+      this.getPlatformPlanCatalog(),
+      this.getPlatformBillingConfig(),
+    ]);
+
+    return catalog
+      .filter((plan) => plan.isActive)
+      .map((plan) => ({
+        key: plan.key,
+        label: plan.label,
+        seats: billing.plans[plan.key]?.seats ?? plan.seats,
+        priceLkr: billing.plans[plan.key]?.monthlyPriceLkr ?? plan.priceLkr,
+        description: plan.description,
+        defaultModules: plan.defaultModules,
+        sortOrder: plan.sortOrder,
+        isActive: plan.isActive,
+      }));
+  }
+
+  async savePlatformPlanCatalog(dto: SavePlatformPlansDto): Promise<PlatformPlanCatalogEntry[]> {
+    const normalizedPlans = dto.plans
+      .map((plan, index) => this.normalizePlanCatalogEntry(plan, index))
+      .filter((plan): plan is PlatformPlanCatalogEntry => plan !== null);
+
+    if (!normalizedPlans.length) {
+      throw new BadRequestException('At least one valid subscription plan is required.');
+    }
+
+    const invalidModules = normalizedPlans.flatMap((plan) =>
+      plan.defaultModules.filter(
+        (moduleKey) => !ALL_BUSINESS_MODULE_KEYS.includes(moduleKey as (typeof ALL_BUSINESS_MODULE_KEYS)[number]),
+      ),
+    );
+
+    if (invalidModules.length) {
+      throw new BadRequestException(`Invalid module keys in plan catalog: ${Array.from(new Set(invalidModules)).join(', ')}`);
+    }
+
+    const nextCatalog = normalizedPlans.sort((a, b) => a.sortOrder - b.sortOrder);
+    await this.prisma.platformSetting.upsert({
+      where: { key: PLATFORM_PLANS_KEY },
+      update: { value: { plans: nextCatalog } as unknown as Prisma.InputJsonValue },
+      create: {
+        key: PLATFORM_PLANS_KEY,
+        value: { plans: nextCatalog } as unknown as Prisma.InputJsonValue,
+      },
+    });
+
+    const billing = await this.getPlatformBillingConfig();
+    const nextBillingPlans = { ...billing.plans };
+    for (const plan of nextCatalog) {
+      if (!nextBillingPlans[plan.key]) {
+        nextBillingPlans[plan.key] = {
+          monthlyPriceLkr: plan.priceLkr,
+          seats: plan.seats,
+        };
+      }
+    }
+
+    await this.prisma.platformSetting.upsert({
+      where: { key: PLATFORM_BILLING_KEY },
+      update: {
+        value: {
+          ...billing,
+          plans: nextBillingPlans,
+        } as unknown as Prisma.InputJsonValue,
+      },
+      create: {
+        key: PLATFORM_BILLING_KEY,
+        value: {
+          ...billing,
+          plans: nextBillingPlans,
+        } as unknown as Prisma.InputJsonValue,
+      },
+    });
+
+    this.planCatalogCache = nextCatalog;
+    return nextCatalog;
   }
 
   async getPlatformBillingConfig(): Promise<PlatformBillingConfig> {

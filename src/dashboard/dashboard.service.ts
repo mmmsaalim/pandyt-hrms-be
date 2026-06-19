@@ -1,9 +1,14 @@
 import { ForbiddenException, Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { normalizePlan } from '../tenant-configuration/tenant-configuration.constants';
+import { TenantConfigurationService } from '../tenant-configuration/tenant-configuration.service';
 
 @Injectable()
 export class DashboardService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly tenantConfigurationService: TenantConfigurationService,
+  ) {}
 
   private monthLabel(date: Date): string {
     return date.toLocaleString('en-GB', { month: 'short' });
@@ -148,14 +153,15 @@ export class DashboardService {
     const totalRevenue = tenants * 50 + Math.max(totalEmployees * 0.1, 0);
     const months = this.buildMonthLabels();
     const growthSeries = this.buildMonthlySeries(users.map((user) => user.createdAt));
+    const planCatalog = await this.tenantConfigurationService.getPlatformPlanCatalog();
     const planCounts = Array.from(
       tenantPlans.reduce((acc, tenant) => {
-        const key = tenant.plan?.trim() || 'Unspecified';
+        const key = normalizePlan(tenant.plan?.trim() || 'UNSPECIFIED');
         acc.set(key, (acc.get(key) ?? 0) + 1);
         return acc;
       }, new Map<string, number>()),
-      ([label, value]) => ({
-        label,
+      ([key, value]) => ({
+        label: key === 'UNSPECIFIED' ? 'Unspecified' : this.tenantConfigurationService.planLabelFromCatalog(planCatalog, key),
         value,
       }),
     ).sort((a, b) => b.value - a.value);
@@ -181,6 +187,7 @@ export class DashboardService {
         name: tenant.name,
         companyCode: tenant.companyCode ?? '',
         plan: tenant.plan,
+        planLabel: this.tenantConfigurationService.planLabelFromCatalog(planCatalog, tenant.plan),
         status: tenant.status,
         leadStatus: tenant.leadStatus,
         createdAt: tenant.createdAt,
