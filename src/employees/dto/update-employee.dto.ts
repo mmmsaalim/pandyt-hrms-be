@@ -32,6 +32,10 @@ export class UpdateEmployeeDto {
   joinedDate?: string;
 
   @IsOptional()
+  @IsDateString()
+  dateOfBirth?: string;
+
+  @IsOptional()
   @IsEnum(EmploymentStatusEnum)
   employmentStatus?: EmploymentStatusEnum;
 

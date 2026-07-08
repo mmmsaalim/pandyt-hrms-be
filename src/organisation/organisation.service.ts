@@ -63,16 +63,30 @@ export class OrganisationService {
     return this.prisma.location.delete({ where: { id } });
   }
 
+  private async validateManager(tenantId: number, managerId: number | undefined | null) {
+    if (!managerId) return;
+    const manager = await this.prisma.employee.findFirst({
+      where: { id: managerId, tenantId, deletedAt: null },
+    });
+    if (!manager) throw new NotFoundException('Manager employee not found in this tenant.');
+  }
+
   // --- Departments CRUD ---
   async findAllDepartments(user: RequestUser) {
     const tenantId = this.requireTenant(user);
     return this.prisma.department.findMany({
       where: { tenantId },
-      include: { location: true },
+      include: {
+        location: true,
+        manager: { include: { user: { select: { firstName: true, lastName: true } } } },
+      },
     });
   }
 
-  async createDepartment(dto: { name: string; locationId?: number; managerId?: number }, user: RequestUser) {
+  async createDepartment(
+    dto: { name: string; locationId?: number; managerId?: number | null },
+    user: RequestUser,
+  ) {
     const tenantId = this.requireTenant(user);
 
     if (dto.locationId) {
@@ -80,17 +94,20 @@ export class OrganisationService {
       if (!location) throw new NotFoundException('Location not found in this tenant.');
     }
 
+    await this.validateManager(tenantId, dto.managerId ?? undefined);
+
     return this.prisma.department.create({
-      data: {
-        ...dto,
-        tenantId,
+      data: { ...dto, tenantId },
+      include: {
+        location: true,
+        manager: { include: { user: { select: { firstName: true, lastName: true } } } },
       },
     });
   }
 
   async updateDepartment(
     id: number,
-    dto: { name?: string; locationId?: number | null; managerId?: number },
+    dto: { name?: string; locationId?: number | null; managerId?: number | null },
     user: RequestUser,
   ) {
     const tenantId = this.requireTenant(user);
@@ -102,9 +119,15 @@ export class OrganisationService {
       if (!location) throw new NotFoundException('Location not found in this tenant.');
     }
 
+    await this.validateManager(tenantId, dto.managerId ?? undefined);
+
     return this.prisma.department.update({
       where: { id },
       data: dto,
+      include: {
+        location: true,
+        manager: { include: { user: { select: { firstName: true, lastName: true } } } },
+      },
     });
   }
 
@@ -189,6 +212,9 @@ export class OrganisationService {
       this.prisma.department.findMany({
         where: { tenantId },
         orderBy: { name: 'asc' },
+        include: {
+          manager: { include: { user: { select: { firstName: true, lastName: true } } } },
+        },
       }),
       this.prisma.team.findMany({
         where: { tenantId },
@@ -196,12 +222,36 @@ export class OrganisationService {
       }),
       this.prisma.employee.findMany({
         where: { tenantId, deletedAt: null },
+        select: {
+          id: true,
+          employeeCode: true,
+          departmentId: true,
+          teamId: true,
+          user: { select: { firstName: true, lastName: true, email: true } },
+        },
       }),
     ]);
+
+    const mapEmployee = (employee: (typeof employees)[number]) => ({
+      id: employee.id,
+      employeeCode: employee.employeeCode,
+      name: `${employee.user?.firstName ?? ''} ${employee.user?.lastName ?? ''}`.trim(),
+      email: employee.user?.email,
+    });
 
     const buildDepartmentNode = (dept: (typeof departments)[number]) => ({
       id: dept.id,
       name: dept.name,
+      managerId: dept.managerId,
+      managerName: dept.manager
+        ? `${dept.manager.user?.firstName ?? ''} ${dept.manager.user?.lastName ?? ''}`.trim()
+        : null,
+      _count: {
+        employees: employees.filter((emp) => emp.departmentId === dept.id).length,
+      },
+      employees: employees
+        .filter((emp) => emp.departmentId === dept.id && !emp.teamId)
+        .map(mapEmployee),
       teams: teams
         .filter((t) => t.departmentId === dept.id)
         .map((team) => ({
@@ -210,6 +260,7 @@ export class OrganisationService {
           _count: {
             employees: employees.filter((emp) => emp.teamId === team.id).length,
           },
+          employees: employees.filter((emp) => emp.teamId === team.id).map(mapEmployee),
         })),
     });
 

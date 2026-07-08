@@ -1,6 +1,7 @@
 import { BadRequestException, forwardRef, Inject, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { AuditLogService } from '../common/audit-log.service';
 import { LeaveService } from '../leave/leave.service';
 import { LeaveSetupConfig } from '../leave/leave.constants';
 import { DEFAULT_PAYSLIP_TEMPLATE_KEY } from '../payroll/payslip.constants';
@@ -28,6 +29,10 @@ import {
 } from './tenant-configuration.constants';
 import { SavePlatformBillingDto } from './dto/save-platform-billing.dto';
 import { SavePlatformPlansDto } from './dto/save-platform-plans.dto';
+import {
+  CreateTenantCustomFieldDto,
+  SaveCompanyAdminConfigurationDto,
+} from './dto/save-company-admin-configuration.dto';
 
 export type TenantFieldRuntimeConfig = {
   fieldKey: string;
@@ -53,12 +58,20 @@ export type TenantRuntimeConfig = {
 
 type TxClient = Prisma.TransactionClient;
 
+type TenantCustomFieldDefinition = {
+  fieldKey: string;
+  label: string;
+  fieldType: string;
+  options?: unknown;
+};
+
 @Injectable()
 export class TenantConfigurationService {
   private planCatalogCache: PlatformPlanCatalogEntry[] | null = null;
 
   constructor(
     private readonly prisma: PrismaService,
+    private readonly auditLogService: AuditLogService,
     @Inject(forwardRef(() => LeaveService))
     private readonly leaveService: LeaveService,
   ) {}
@@ -145,15 +158,23 @@ export class TenantConfigurationService {
       where: { tenantId, moduleKey: { in: enabledModules } },
     });
 
+    const rawConfig = (tenant.config ?? {}) as Record<string, unknown>;
     const settingMap = new Map(
       tenantFieldSettings.map((row) => [`${row.moduleKey}:${row.fieldKey}`, row]),
     );
+
+    const customFieldDefinitions = this.getCustomFieldDefinitions(rawConfig);
 
     const fieldsByModule: Record<string, TenantFieldRuntimeConfig[]> = {};
 
     for (const field of fieldDefinitions) {
       const setting = settingMap.get(`${field.moduleKey}:${field.fieldKey}`);
-      const enabled = setting?.enabled ?? false;
+      const isDefaultEmployeeField =
+        field.moduleKey === 'employees' &&
+        DEFAULT_EMPLOYEE_PROFILE_FIELDS.includes(
+          field.fieldKey as (typeof DEFAULT_EMPLOYEE_PROFILE_FIELDS)[number],
+        );
+      const enabled = setting ? setting.enabled : isDefaultEmployeeField || field.isSystem;
       if (!enabled) {
         continue;
       }
@@ -164,7 +185,9 @@ export class TenantConfigurationService {
         fieldType: field.fieldType,
         options: field.options,
         enabled,
-        required: setting?.required ?? false,
+        required:
+          setting?.required ??
+          (field.fieldKey === 'nic' || field.fieldKey === 'epfNo'),
         sortOrder: setting?.sortOrder ?? 0,
         isSystem: field.isSystem,
       };
@@ -172,11 +195,37 @@ export class TenantConfigurationService {
       fieldsByModule[field.moduleKey] = [...(fieldsByModule[field.moduleKey] ?? []), runtimeField];
     }
 
+    for (const [moduleKey, customFields] of Object.entries(customFieldDefinitions)) {
+      if (!enabledModules.includes(moduleKey)) {
+        continue;
+      }
+
+      for (const customField of customFields) {
+        const setting = settingMap.get(`${moduleKey}:${customField.fieldKey}`);
+        const enabled = setting?.enabled ?? true;
+        if (!enabled) {
+          continue;
+        }
+
+        fieldsByModule[moduleKey] = [
+          ...(fieldsByModule[moduleKey] ?? []),
+          {
+            fieldKey: customField.fieldKey,
+            label: customField.label,
+            fieldType: customField.fieldType,
+            options: customField.options,
+            enabled,
+            required: setting?.required ?? false,
+            sortOrder: setting?.sortOrder ?? 0,
+            isSystem: false,
+          },
+        ];
+      }
+    }
+
     for (const moduleKey of Object.keys(fieldsByModule)) {
       fieldsByModule[moduleKey].sort((a, b) => a.sortOrder - b.sortOrder || a.label.localeCompare(b.label));
     }
-
-    const rawConfig = (tenant.config ?? {}) as Record<string, unknown>;
 
     return {
       plan: tenant.plan,
@@ -251,6 +300,8 @@ export class TenantConfigurationService {
     );
 
     const planModules = await this.resolvePlanModules(tenant.plan);
+    const rawConfig = (tenant.config ?? {}) as Record<string, unknown>;
+    const customFieldDefinitions = this.getCustomFieldDefinitions(rawConfig);
 
     return {
       tenantId: tenant.id,
@@ -258,13 +309,13 @@ export class TenantConfigurationService {
       seats: tenant.seats,
       planSeatLimit: await this.resolvePlanSeatLimit(tenant.plan),
       planDefaultModules: planModules,
-      config: this.normalizeTenantConfig((tenant.config ?? {}) as Record<string, unknown>),
-      modules: modules.map((module) => ({
-        key: module.key,
-        label: module.label,
-        description: module.description,
-        enabled: enabledModuleMap.get(module.key) ?? planModules.includes(module.key as never),
-        fields: module.fields.map((field) => {
+      config: {
+        ...this.normalizeTenantConfig(rawConfig),
+        letterhead: this.getLetterheadConfig(rawConfig),
+        reportTemplates: this.getReportTemplates(rawConfig),
+      },
+      modules: modules.map((module) => {
+        const platformFields = module.fields.map((field) => {
           const setting = fieldSettingMap.get(`${module.key}:${field.fieldKey}`);
           return {
             fieldKey: field.fieldKey,
@@ -272,13 +323,282 @@ export class TenantConfigurationService {
             fieldType: field.fieldType,
             options: field.options,
             isSystem: field.isSystem,
+            isCustom: false,
             enabled: setting?.enabled ?? false,
             required: setting?.required ?? false,
             sortOrder: setting?.sortOrder ?? 0,
           };
-        }),
-      })),
+        });
+
+        const customFields = (customFieldDefinitions[module.key] ?? []).map((field) => {
+          const setting = fieldSettingMap.get(`${module.key}:${field.fieldKey}`);
+          return {
+            fieldKey: field.fieldKey,
+            label: field.label,
+            fieldType: field.fieldType,
+            options: field.options,
+            isSystem: false,
+            isCustom: true,
+            enabled: setting?.enabled ?? true,
+            required: setting?.required ?? false,
+            sortOrder: setting?.sortOrder ?? 0,
+          };
+        });
+
+        return {
+          key: module.key,
+          label: module.label,
+          description: module.description,
+          enabled: enabledModuleMap.get(module.key) ?? planModules.includes(module.key as never),
+          fields: [...platformFields, ...customFields],
+        };
+      }),
     };
+  }
+
+  async getCompanyAdminConfiguration(tenantId: number) {
+    const payload = await this.getTenantConfigurationForAdmin(tenantId);
+    return {
+      ...payload,
+      modules: payload.modules.filter((module) => module.enabled),
+    };
+  }
+
+  async saveCompanyAdminConfiguration(tenantId: number, dto: SaveCompanyAdminConfigurationDto) {
+    const tenant = await this.prisma.tenant.findUnique({
+      where: { id: tenantId },
+      select: { id: true, plan: true, config: true },
+    });
+
+    if (!tenant) {
+      throw new NotFoundException('Tenant not found.');
+    }
+
+    const enabledModules = await this.getEnabledModuleKeys(tenantId);
+    const existingConfig = (tenant.config ?? {}) as Record<string, unknown>;
+    const normalizedExisting = this.normalizeTenantConfig(existingConfig);
+
+    const nextConfig = {
+      ...existingConfig,
+      locale: normalizedExisting.locale,
+      currency: normalizedExisting.currency,
+      fiscalYearStartMonth: normalizedExisting.fiscalYearStartMonth,
+      payslipTemplateKey: dto.payslipTemplateKey ?? normalizedExisting.payslipTemplateKey,
+      leaveSetup: normalizedExisting.leaveSetup,
+      letterhead: dto.letterhead ?? this.getLetterheadConfig(existingConfig),
+      reportTemplates: dto.reportTemplates ?? this.getReportTemplates(existingConfig),
+      customFieldDefinitions: this.getCustomFieldDefinitions(existingConfig),
+    };
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.tenant.update({
+        where: { id: tenantId },
+        data: {
+          config: nextConfig as unknown as Prisma.InputJsonValue,
+        },
+      });
+
+      await this.persistFieldSettings(tx, tenantId, dto.moduleFeatures ?? {}, enabledModules);
+      await this.persistCustomFieldSettings(tx, tenantId, dto.moduleFeatures ?? {}, enabledModules, nextConfig);
+    });
+
+    return this.getCompanyAdminConfiguration(tenantId);
+  }
+
+  async createTenantCustomField(tenantId: number, moduleKey: string, dto: CreateTenantCustomFieldDto) {
+    const normalizedModuleKey = moduleKey.trim().toLowerCase();
+    const enabledModules = await this.getEnabledModuleKeys(tenantId);
+
+    if (!enabledModules.includes(normalizedModuleKey)) {
+      throw new BadRequestException(`Module "${normalizedModuleKey}" is not included in your subscription.`);
+    }
+
+    const fieldKey = dto.fieldKey.trim().toLowerCase().replace(/[^a-z0-9_]/g, '_');
+    if (!fieldKey) {
+      throw new BadRequestException('Field key is required.');
+    }
+
+    const tenant = await this.prisma.tenant.findUnique({
+      where: { id: tenantId },
+      select: { config: true },
+    });
+
+    if (!tenant) {
+      throw new NotFoundException('Tenant not found.');
+    }
+
+    const existingConfig = (tenant.config ?? {}) as Record<string, unknown>;
+    const customFieldDefinitions = this.getCustomFieldDefinitions(existingConfig);
+    const moduleFields = customFieldDefinitions[normalizedModuleKey] ?? [];
+
+    if (moduleFields.some((field) => field.fieldKey === fieldKey)) {
+      throw new BadRequestException(`Field "${fieldKey}" already exists for this module.`);
+    }
+
+    const existingPlatformField = await this.prisma.fieldDefinition.findFirst({
+      where: { moduleKey: normalizedModuleKey, fieldKey },
+    });
+
+    if (existingPlatformField) {
+      throw new BadRequestException(`Field "${fieldKey}" is reserved by the platform catalog.`);
+    }
+
+    const nextCustomField: TenantCustomFieldDefinition = {
+      fieldKey,
+      label: dto.label.trim(),
+      fieldType: dto.fieldType.trim(),
+      options: dto.options,
+    };
+
+    const nextConfig = {
+      ...existingConfig,
+      customFieldDefinitions: {
+        ...customFieldDefinitions,
+        [normalizedModuleKey]: [...moduleFields, nextCustomField],
+      },
+    };
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.tenant.update({
+        where: { id: tenantId },
+        data: { config: nextConfig as Prisma.InputJsonValue },
+      });
+
+      await tx.tenantFieldSetting.upsert({
+        where: {
+          tenantId_moduleKey_fieldKey: {
+            tenantId,
+            moduleKey: normalizedModuleKey,
+            fieldKey,
+          },
+        },
+        update: {
+          enabled: true,
+          required: false,
+        },
+        create: {
+          tenantId,
+          moduleKey: normalizedModuleKey,
+          fieldKey,
+          enabled: true,
+          required: false,
+        },
+      });
+    });
+
+    return this.getCompanyAdminConfiguration(tenantId);
+  }
+
+  private getCustomFieldDefinitions(rawConfig: Record<string, unknown>): Record<string, TenantCustomFieldDefinition[]> {
+    const raw = rawConfig.customFieldDefinitions;
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+      return {};
+    }
+
+    const output: Record<string, TenantCustomFieldDefinition[]> = {};
+    for (const [moduleKey, fields] of Object.entries(raw as Record<string, unknown>)) {
+      if (!Array.isArray(fields)) {
+        continue;
+      }
+
+      output[moduleKey] = fields
+        .filter((field) => field && typeof field === 'object' && !Array.isArray(field))
+        .map((field) => {
+          const entry = field as Record<string, unknown>;
+          return {
+            fieldKey: String(entry.fieldKey ?? '').trim(),
+            label: String(entry.label ?? '').trim(),
+            fieldType: String(entry.fieldType ?? 'text').trim(),
+            options: entry.options,
+          };
+        })
+        .filter((field) => field.fieldKey && field.label);
+    }
+
+    return output;
+  }
+
+  private getLetterheadConfig(rawConfig: Record<string, unknown>) {
+    const raw = rawConfig.letterhead;
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+      return {
+        companyDisplayName: '',
+        address: '',
+        phone: '',
+        email: '',
+        logoUrl: '',
+      };
+    }
+
+    const entry = raw as Record<string, unknown>;
+    return {
+      companyDisplayName: typeof entry.companyDisplayName === 'string' ? entry.companyDisplayName : '',
+      address: typeof entry.address === 'string' ? entry.address : '',
+      phone: typeof entry.phone === 'string' ? entry.phone : '',
+      email: typeof entry.email === 'string' ? entry.email : '',
+      logoUrl: typeof entry.logoUrl === 'string' ? entry.logoUrl : '',
+    };
+  }
+
+  private getReportTemplates(rawConfig: Record<string, unknown>) {
+    const raw = rawConfig.reportTemplates;
+    if (!Array.isArray(raw)) {
+      return [];
+    }
+
+    return raw
+      .filter((item) => item && typeof item === 'object' && !Array.isArray(item))
+      .map((item) => {
+        const entry = item as Record<string, unknown>;
+        return {
+          id: String(entry.id ?? ''),
+          name: String(entry.name ?? ''),
+          type: String(entry.type ?? 'GENERAL'),
+          content: typeof entry.content === 'string' ? entry.content : '',
+        };
+      })
+      .filter((item) => item.id && item.name);
+  }
+
+  private async persistCustomFieldSettings(
+    tx: TxClient,
+    tenantId: number,
+    moduleFeatures: Record<string, Record<string, { enabled?: boolean; required?: boolean; sortOrder?: number }>>,
+    enabledModules: string[],
+    tenantConfig: Record<string, unknown>,
+  ) {
+    const customFieldDefinitions = this.getCustomFieldDefinitions(tenantConfig);
+
+    for (const moduleKey of enabledModules) {
+      const customFields = customFieldDefinitions[moduleKey] ?? [];
+      const moduleFeaturesForModule = moduleFeatures[moduleKey] ?? {};
+
+      for (const field of customFields) {
+        const feature = moduleFeaturesForModule[field.fieldKey];
+        await tx.tenantFieldSetting.upsert({
+          where: {
+            tenantId_moduleKey_fieldKey: {
+              tenantId,
+              moduleKey,
+              fieldKey: field.fieldKey,
+            },
+          },
+          update: {
+            enabled: feature?.enabled ?? true,
+            required: feature?.required ?? false,
+            sortOrder: feature?.sortOrder ?? 0,
+          },
+          create: {
+            tenantId,
+            moduleKey,
+            fieldKey: field.fieldKey,
+            enabled: feature?.enabled ?? true,
+            required: feature?.required ?? false,
+            sortOrder: feature?.sortOrder ?? 0,
+          },
+        });
+      }
+    }
   }
 
   async saveTenantConfiguration(tenantId: number, dto: SaveTenantConfigurationDto) {
@@ -293,9 +613,7 @@ export class TenantConfigurationService {
 
     const nextPlan = dto.plan ? normalizePlan(dto.plan) : normalizePlan(tenant.plan);
     const planDefaultModules = await this.resolvePlanModules(nextPlan);
-    const requestedModules = dto.enabledModules?.length
-      ? dto.enabledModules.map((key) => key.trim().toLowerCase())
-      : planDefaultModules;
+    const requestedModules = planDefaultModules;
 
     const invalidModules = requestedModules.filter(
       (key) => !ALL_BUSINESS_MODULE_KEYS.includes(key as (typeof ALL_BUSINESS_MODULE_KEYS)[number]),
@@ -305,7 +623,7 @@ export class TenantConfigurationService {
       throw new BadRequestException(`Invalid module keys: ${invalidModules.join(', ')}`);
     }
 
-    // Plan presets are defaults only — Super Admin may enable modules beyond the plan tier.
+    // Modules are determined by subscription plan — not manually overridden.
 
     const existingConfig = (tenant.config ?? {}) as Record<string, unknown>;
     const normalizedExisting = this.normalizeTenantConfig(existingConfig);
@@ -330,7 +648,9 @@ export class TenantConfigurationService {
       });
 
       await this.persistModuleSettings(tx, tenantId, requestedModules);
-      await this.persistFieldSettings(tx, tenantId, dto.moduleFeatures ?? {}, requestedModules);
+      if (dto.moduleFeatures !== undefined) {
+        await this.persistFieldSettings(tx, tenantId, dto.moduleFeatures, requestedModules);
+      }
     });
 
     if (requestedModules.includes('leave') && dto.config?.leaveSetup) {
@@ -637,7 +957,11 @@ export class TenantConfigurationService {
       }));
   }
 
-  async savePlatformPlanCatalog(dto: SavePlatformPlansDto): Promise<PlatformPlanCatalogEntry[]> {
+  async savePlatformPlanCatalog(
+    dto: SavePlatformPlansDto,
+    audit?: { userId: number; ipAddress?: string },
+  ): Promise<PlatformPlanCatalogEntry[]> {
+    const previousCatalog = await this.getPlatformPlanCatalog(true);
     const normalizedPlans = dto.plans
       .map((plan, index) => this.normalizePlanCatalogEntry(plan, index))
       .filter((plan): plan is PlatformPlanCatalogEntry => plan !== null);
@@ -669,12 +993,10 @@ export class TenantConfigurationService {
     const billing = await this.getPlatformBillingConfig();
     const nextBillingPlans = { ...billing.plans };
     for (const plan of nextCatalog) {
-      if (!nextBillingPlans[plan.key]) {
-        nextBillingPlans[plan.key] = {
-          monthlyPriceLkr: plan.priceLkr,
-          seats: plan.seats,
-        };
-      }
+      nextBillingPlans[plan.key] = {
+        monthlyPriceLkr: plan.priceLkr,
+        seats: plan.seats,
+      };
     }
 
     await this.prisma.platformSetting.upsert({
@@ -695,6 +1017,19 @@ export class TenantConfigurationService {
     });
 
     this.planCatalogCache = nextCatalog;
+
+    if (audit?.userId) {
+      await this.auditLogService.log({
+        userId: audit.userId,
+        action: 'platform.plans.update',
+        entity: 'platform_setting',
+        entityId: 0,
+        oldValue: JSON.stringify(previousCatalog),
+        newValue: JSON.stringify(nextCatalog),
+        ipAddress: audit.ipAddress,
+      });
+    }
+
     return nextCatalog;
   }
 
@@ -721,7 +1056,10 @@ export class TenantConfigurationService {
     };
   }
 
-  async savePlatformBillingConfig(dto: SavePlatformBillingDto): Promise<PlatformBillingConfig> {
+  async savePlatformBillingConfig(
+    dto: SavePlatformBillingDto,
+    audit?: { userId: number; ipAddress?: string },
+  ): Promise<PlatformBillingConfig> {
     const current = await this.getPlatformBillingConfig();
     const nextPlans = { ...current.plans };
 
@@ -759,6 +1097,18 @@ export class TenantConfigurationService {
         value: next as unknown as Prisma.InputJsonValue,
       },
     });
+
+    if (audit?.userId) {
+      await this.auditLogService.log({
+        userId: audit.userId,
+        action: 'platform.billing.update',
+        entity: 'platform_setting',
+        entityId: 0,
+        oldValue: JSON.stringify(current),
+        newValue: JSON.stringify(next),
+        ipAddress: audit.ipAddress,
+      });
+    }
 
     return next;
   }

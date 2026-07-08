@@ -212,13 +212,14 @@ async function main() {
     { fieldKey: 'nic', label: 'NIC Number', fieldType: 'text' },
     { fieldKey: 'epfNo', label: 'EPF Number', fieldType: 'text' },
     { fieldKey: 'etfNo', label: 'ETF Number', fieldType: 'text' },
+    { fieldKey: 'tinNo', label: 'TIN Number', fieldType: 'text' },
     { fieldKey: 'dateOfBirth', label: 'Date of Birth', fieldType: 'date' },
     { fieldKey: 'phone', label: 'Phone Number', fieldType: 'text' },
     {
       fieldKey: 'gender',
       label: 'Gender',
       fieldType: 'select',
-      options: { values: ['Male', 'Female', 'Other', 'Prefer not to say'] },
+      options: { values: ['Male', 'Female'] },
     },
     { fieldKey: 'emergencyContact', label: 'Emergency Contact', fieldType: 'text' },
     {
@@ -229,6 +230,7 @@ async function main() {
     },
     { fieldKey: 'address', label: 'Residential Address', fieldType: 'text' },
     { fieldKey: 'bankName', label: 'Bank Name', fieldType: 'text' },
+    { fieldKey: 'bankBranch', label: 'Bank Branch', fieldType: 'text' },
     { fieldKey: 'bankAccount', label: 'Bank Account Number', fieldType: 'text' },
     {
       fieldKey: 'religion',
@@ -878,7 +880,58 @@ async function main() {
     });
   }
 
+  await backfillEmployeeProfileFields();
+
   console.log('Seed completed successfully.');
+}
+
+const DEFAULT_EMPLOYEE_PROFILE_FIELDS = [
+  'nic',
+  'epfNo',
+  'etfNo',
+  'tinNo',
+  'dateOfBirth',
+  'phone',
+  'gender',
+  'emergencyContact',
+  'employmentType',
+  'address',
+  'bankName',
+  'bankBranch',
+  'bankAccount',
+] as const;
+
+async function backfillEmployeeProfileFields() {
+  const tenantsWithEmployees = await prisma.tenantModuleSetting.findMany({
+    where: { moduleKey: 'employees', enabled: true },
+    select: { tenantId: true },
+  });
+
+  for (const { tenantId } of tenantsWithEmployees) {
+    for (const fieldKey of DEFAULT_EMPLOYEE_PROFILE_FIELDS) {
+      await prisma.tenantFieldSetting.upsert({
+        where: {
+          tenantId_moduleKey_fieldKey: {
+            tenantId,
+            moduleKey: 'employees',
+            fieldKey,
+          },
+        },
+        update: {
+          enabled: true,
+          required: fieldKey === 'nic' || fieldKey === 'epfNo',
+        },
+        create: {
+          tenantId,
+          moduleKey: 'employees',
+          fieldKey,
+          enabled: true,
+          required: fieldKey === 'nic' || fieldKey === 'epfNo',
+          sortOrder: 0,
+        },
+      });
+    }
+  }
 }
 
 main()

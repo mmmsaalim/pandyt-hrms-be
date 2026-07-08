@@ -43,6 +43,8 @@ export class AuditLogService {
         'user.login',
         'user.logout',
         'data_export',
+        'platform.billing.update',
+        'platform.plans.update',
       ];
 
       // Only log sensitive operations

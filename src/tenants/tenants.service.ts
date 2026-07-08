@@ -22,6 +22,7 @@ import {
   resolveSeatsForPlan,
 } from '../tenant-configuration/tenant-configuration.constants';
 import { buildPaginatedResult, parsePaginationQuery } from '../common/pagination';
+import { normalizeCompanyProfile, readCompanyProfile } from './tenant-company-profile.constants';
 
 type TxClient = Prisma.TransactionClient;
 
@@ -133,6 +134,21 @@ export class TenantsService {
     user: { id: number; firstName: string; lastName: string },
   ) {
     const employeeCode = this.buildAdminEmployeeCode(tenantId, user.id);
+    const adminDepartment = await tx.department.upsert({
+      where: {
+        id: (
+          await tx.department.findFirst({
+            where: { tenantId, name: 'Administration' },
+            select: { id: true },
+          })
+        )?.id ?? 0,
+      },
+      update: {},
+      create: {
+        tenantId,
+        name: 'Administration',
+      },
+    });
 
     await tx.employee.upsert({
       where: { userId: user.id },
@@ -140,6 +156,7 @@ export class TenantsService {
         tenantId,
         employeeCode,
         department: 'Administration',
+        departmentId: adminDepartment.id,
         designation: 'Company Admin',
         employmentStatus: 'ACTIVE',
       },
@@ -148,6 +165,7 @@ export class TenantsService {
         userId: user.id,
         employeeCode,
         department: 'Administration',
+        departmentId: adminDepartment.id,
         designation: 'Company Admin',
         joinedDate: new Date(),
         employmentStatus: 'ACTIVE',
@@ -288,6 +306,7 @@ export class TenantsService {
       createdAt: row.createdAt,
       usersCount: row._count.users,
       companyAdmin: row.users[0] ?? null,
+      companyProfile: readCompanyProfile(row.config),
     }));
 
     return buildPaginatedResult(items, total, pagination.page, pagination.limit);
@@ -343,6 +362,7 @@ export class TenantsService {
           row.config && typeof row.config === 'object' && !Array.isArray(row.config)
             ? (row.config as Record<string, unknown>)['leadDetails'] ?? null
             : null,
+        companyProfile: readCompanyProfile(row.config),
         latestAdminInvitation,
         pendingAdminInvitations,
       };
@@ -359,6 +379,21 @@ export class TenantsService {
         skip: pagination.skip,
         take: pagination.limit,
         include: {
+          billingSettings: true,
+          users: {
+            where: {
+              status: { not: 'INACTIVE' },
+              roles: {
+                some: {
+                  role: {
+                    name: 'COMPANY_ADMIN',
+                  },
+                },
+              },
+            },
+            orderBy: { createdAt: 'asc' },
+            select: { email: true },
+          },
           _count: {
             select: {
               employees: {
@@ -375,7 +410,15 @@ export class TenantsService {
       this.tenantConfigurationService.getPlatformBillingConfig(),
     ]);
 
-    const items = tenants.map((tenant) => this.toPaymentOverviewRow(tenant, billingConfig));
+    const items = tenants.map((tenant) => {
+      const billingSettings = this.mapBillingSettings(tenant.id, tenant.billingSettings);
+      return {
+        ...this.toPaymentOverviewRow(tenant, billingConfig),
+        billingContactEmails: billingSettings.recipientEmails,
+        companyAdminEmail: tenant.users[0]?.email ?? null,
+        billingRemindersEnabled: billingSettings.enabled,
+      };
+    });
     return buildPaginatedResult(items, total, pagination.page, pagination.limit);
   }
 
@@ -383,26 +426,10 @@ export class TenantsService {
     const tenant = await this.prisma.tenant.findUnique({
       where: { id: tenantId },
       include: {
+        billingSettings: true,
         _count: {
           select: {
             employees: true,
-          },
-        },
-        users: {
-          where: {
-            status: { not: 'INACTIVE' },
-            roles: {
-              some: {
-                role: {
-                  name: 'COMPANY_ADMIN',
-                },
-              },
-            },
-          },
-          select: {
-            email: true,
-            firstName: true,
-            lastName: true,
           },
         },
       },
@@ -418,21 +445,23 @@ export class TenantsService {
       throw new BadRequestException('Reminder is available only for overdue tenants.');
     }
 
-    if (tenant.users.length === 0) {
+    const settings = this.mapBillingSettings(tenant.id, tenant.billingSettings);
+    const recipients = await this.resolveBillingRecipients(tenant.id, settings.recipientEmails);
+    if (recipients.length === 0) {
       return {
         tenantId: tenant.id,
         companyName: tenant.name,
         recipients: 0,
-        message: 'No active company admin recipients were found.',
+        message: 'No billing contacts or company admin recipients were found.',
       };
     }
 
     let sent = 0;
-    for (const user of tenant.users) {
+    for (const recipient of recipients) {
       try {
         await this.emailService.sendOverduePaymentReminderEmail({
-          to: user.email,
-          fullName: `${user.firstName} ${user.lastName}`.trim(),
+          to: recipient.email,
+          fullName: recipient.fullName,
           companyName: tenant.name,
           totalDueLkr: payment.totalDue ?? 0,
           renewalDate: new Date(payment.renewalDate).toLocaleDateString('en-GB'),
@@ -442,7 +471,7 @@ export class TenantsService {
         sent += 1;
       } catch (error) {
         this.logger.warn(
-          `Overdue reminder could not be sent to ${user.email}: ${error instanceof Error ? error.message : 'unknown error'}`,
+          `Overdue reminder could not be sent to ${recipient.email}: ${error instanceof Error ? error.message : 'unknown error'}`,
         );
       }
     }
@@ -451,6 +480,7 @@ export class TenantsService {
       tenantId: tenant.id,
       companyName: tenant.name,
       recipients: sent,
+      recipientEmails: recipients.map((recipient) => recipient.email),
       totalDue: payment.totalDue,
     };
   }
@@ -720,6 +750,22 @@ export class TenantsService {
   }
 
   private async resolveBillingRecipients(tenantId: number, customEmails: string[]) {
+    const billingContacts = new Map<string, string>();
+    for (const email of customEmails) {
+      const trimmed = email.trim();
+      if (!trimmed) {
+        continue;
+      }
+      billingContacts.set(trimmed.toLowerCase(), trimmed);
+    }
+
+    if (billingContacts.size > 0) {
+      return Array.from(billingContacts.values()).map((email) => ({
+        email,
+        fullName: 'Billing Contact',
+      }));
+    }
+
     const admins = await this.prisma.user.findMany({
       where: {
         tenantId,
@@ -739,24 +785,10 @@ export class TenantsService {
       },
     });
 
-    const recipients = new Map<string, { email: string; fullName: string }>();
-    for (const admin of admins) {
-      recipients.set(admin.email.toLowerCase(), {
-        email: admin.email,
-        fullName: `${admin.firstName} ${admin.lastName}`.trim(),
-      });
-    }
-
-    for (const email of customEmails) {
-      if (!recipients.has(email.toLowerCase())) {
-        recipients.set(email.toLowerCase(), {
-          email,
-          fullName: 'Billing Contact',
-        });
-      }
-    }
-
-    return Array.from(recipients.values());
+    return admins.map((admin) => ({
+      email: admin.email,
+      fullName: `${admin.firstName} ${admin.lastName}`.trim() || 'Company Admin',
+    }));
   }
 
   private normalizePlan(plan: string): 'FREEMIUM' | 'STARTER' | 'GROWTH' | 'ENTERPRISE' {
@@ -905,7 +937,8 @@ export class TenantsService {
       enabledModules,
       dto.moduleFeatures,
     );
-    const tenantConfig = {
+    const leadDetails = (dto.config as Record<string, unknown> | undefined)?.['leadDetails'];
+    const tenantConfig: Record<string, unknown> = {
       locale: dto.config?.locale ?? DEFAULT_TENANT_CONFIG.locale,
       currency: dto.config?.currency ?? DEFAULT_TENANT_CONFIG.currency,
       fiscalYearStartMonth:
@@ -918,6 +951,13 @@ export class TenantsService {
         (dto.config as Record<string, unknown> | undefined)?.['leaveSetup'] ??
         DEFAULT_TENANT_CONFIG.leaveSetup,
     };
+    const normalizedProfile = normalizeCompanyProfile(dto.companyProfile);
+    if (normalizedProfile) {
+      tenantConfig.companyProfile = normalizedProfile;
+    }
+    if (leadDetails) {
+      tenantConfig.leadDetails = leadDetails;
+    }
 
     const result = await this.prisma.$transaction(async (tx) => {
       const tenant = await tx.tenant.create({
@@ -928,7 +968,7 @@ export class TenantsService {
           status: 'SUSPENDED',
           leadStatus: 'PENDING',
           seats: resolveSeatsForPlan(normalizedPlan, dto.seats),
-          config: tenantConfig,
+          config: tenantConfig as Prisma.InputJsonValue,
         },
       });
 
@@ -963,6 +1003,15 @@ export class TenantsService {
         id: user.id,
         firstName: user.firstName,
         lastName: user.lastName,
+      });
+
+      const recipientEmails = this.normalizeRecipientEmails(dto.billingContactEmails) ?? [];
+      await tx.tenantBillingSettings.create({
+        data: {
+          tenantId: tenant.id,
+          reminderDaysCsv: (this.normalizeReminderDays(dto.billingReminderDays) ?? this.defaultReminderDays).join(','),
+          recipientEmailsCsv: recipientEmails.join(',') || null,
+        },
       });
 
       return { tenant, user };
@@ -1113,9 +1162,10 @@ export class TenantsService {
   }
 
   async update(id: number, dto: UpdateTenantDto) {
-    let companyCode = dto.companyCode;
+    const { companyProfile, ...tenantFields } = dto;
+    let companyCode = tenantFields.companyCode;
 
-    if (dto.companyCode || dto.name) {
+    if (tenantFields.companyCode || tenantFields.name) {
       const tenant = await this.prisma.tenant.findUnique({
         where: { id },
         select: { name: true },
@@ -1125,20 +1175,44 @@ export class TenantsService {
         throw new BadRequestException('Tenant not found.');
       }
 
-      companyCode = await this.resolveCompanyCode(dto.companyCode, dto.name ?? tenant.name, id);
+      companyCode = await this.resolveCompanyCode(tenantFields.companyCode, tenantFields.name ?? tenant.name, id);
     }
 
-    const data: UpdateTenantDto & { companyCode?: string } = { ...dto };
+    const data: Prisma.TenantUpdateInput = { ...tenantFields };
     if (companyCode) {
       data.companyCode = companyCode;
     }
 
-    if (dto.plan && dto.seats === undefined) {
-      data.seats = resolveSeatsForPlan(dto.plan);
+    if (tenantFields.plan && tenantFields.seats === undefined) {
+      data.seats = resolveSeatsForPlan(tenantFields.plan);
     }
 
-    if (dto.plan) {
-      data.plan = normalizePlan(dto.plan);
+    if (tenantFields.plan) {
+      data.plan = normalizePlan(tenantFields.plan);
+    }
+
+    if (companyProfile) {
+      const existing = await this.prisma.tenant.findUnique({
+        where: { id },
+        select: { config: true },
+      });
+
+      if (!existing) {
+        throw new BadRequestException('Tenant not found.');
+      }
+
+      const existingConfig =
+        existing.config && typeof existing.config === 'object' && !Array.isArray(existing.config)
+          ? (existing.config as Record<string, unknown>)
+          : {};
+
+      data.config = {
+        ...existingConfig,
+        companyProfile: {
+          ...(readCompanyProfile(existing.config) ?? {}),
+          ...(normalizeCompanyProfile(companyProfile) ?? {}),
+        },
+      } as Prisma.InputJsonValue;
     }
 
     return this.prisma.tenant.update({

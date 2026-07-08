@@ -1,4 +1,4 @@
-import { Controller, Get, Req, UseGuards } from '@nestjs/common';
+import { Controller, Get, Param, ParseIntPipe, Req, UseGuards } from '@nestjs/common';
 import { ReportsService } from './reports.service';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
@@ -16,5 +16,17 @@ export class ReportsController {
   @Roles('COMPANY_ADMIN', 'HR_MANAGER')
   summary(@Req() req: { user?: { sub: number; roles?: string[]; tenantId?: number } }) {
     return this.reportsService.summary(req.user);
+  }
+
+  @Get('platform/tenants')
+  @Roles('SUPER_ADMIN')
+  platformTenants() {
+    return this.reportsService.platformTenantReport();
+  }
+
+  @Get('platform/tenants/:tenantId/users')
+  @Roles('SUPER_ADMIN')
+  platformTenantUsers(@Param('tenantId', ParseIntPipe) tenantId: number) {
+    return this.reportsService.platformTenantUsers(tenantId);
   }
 }

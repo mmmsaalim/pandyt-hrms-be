@@ -31,6 +31,8 @@ Main folders used in backend:
 - `src/cross-tenant-reports` - super admin cross-tenant reporting endpoints
 - `src/recruitment` - ATS core entities/endpoints
 - `src/invitations` - resolve and accept invitation flow
+- `src/letters` - HR letter generation (included on all plans; not a billable module toggle)
+- `src/feedback` - team feedback capture for HR review (included on all plans)
 - `src/common` - guards, decorators, tenant enforcement
 - `src/prisma` - Prisma service + tenant middleware
 - `prisma/schema.prisma` - DB schema
@@ -42,6 +44,10 @@ Main folders used in backend:
 - `HR_MANAGER`: tenant HR identity role; **module access only via assigned tenant module roles** (e.g. `EMPLOYEES`, `LEAVE`)
 - `TEAM_LEAD`: team identity role; **module access only via assigned tenant module roles**
 - `EMPLOYEE`: self-service identity role; **module access only via assigned tenant module roles**
+
+**Core HR tools (included on all plans — not module toggles)**
+- Invitations (`src/invitations`), HR Letters (`src/letters`), Team Feedback (`src/feedback`)
+- Feedback: `COMPANY_ADMIN`, `HR_MANAGER`, and `TEAM_LEAD` may list and submit feedback
 
 ## 5) Security Baseline Status (Complete)
 Implemented and active:
@@ -210,6 +216,17 @@ Plan presets in `tenant-configuration.constants.ts`:
 
 Tenant onboard (`POST /api/tenants/onboard`) and company-with-admin flows persist module/field settings via `TenantConfigurationService.persistModuleSettings` / `persistFieldSettings`.
 
+Organisation structure (locations, departments, teams) is **not** captured during Super Admin onboarding. Company Admin sets this up later under **Organisation** (`/organisation`).
+
+Super Admin onboarding stores Sri Lanka company registry details in `tenant.config.companyProfile`:
+- `brNumber`, `registeredAddress`, `city`, `district`, `industryType`
+- `companyPhone`, `companyEmail`, `adminPhone`
+- `tinNumber`, `website` (optional statutory / contact fields)
+
+Sri Lanka-only defaults (`locale=en-LK`, `currency=LKR`, fiscal month `4`, default payslip template) are implicit backend defaults. Do not add them back as required Super Admin onboarding fields unless the product becomes multi-country.
+
+Usage-based billing uses plan seats plus active employee count. Onboarding may collect `billingContactEmails` and `billingReminderDays`, persisted to `TenantBillingSettings`.
+
 ### 14.5 Runtime Enforcement (Login + Guards)
 
 Login (`src/auth/auth.service.ts`) for tenant users returns:
@@ -261,6 +278,8 @@ Invite flow (`employees.service.inviteEmployee`) auto-assigns default module rol
 3. **Sidebar/API visibility** must respect both `enabledModules` (tenant) and `effectivePermissions` (user).
 4. **Plan presets are defaults**, not save-time hard blocks for Super Admin.
 5. **`configuration.manage`** is for Company Admin RBAC UI only — not a billable module toggle.
+6. Organisation setup is **Company Admin → Organisation** — not Super Admin tenant onboarding.
+7. Company code is an internal login key. Show it when necessary, but do not add copy buttons to tenant lists.
 
 ### 14.10 Tenant lifecycle (suspend / archive / reactivate)
 
@@ -422,7 +441,7 @@ Departments without a location appear under `"Unassigned Location"` (id: 0).
 | 5 | FE create forms (Company Admin only) | ✅ Done | `organisation-page.component.*` |
 | 6 | FE update/delete for locations, departments, teams | ✅ Done | `organisation.service.ts`, `organisation-page.component.*` |
 | 7 | Wire employee FK fields (departmentId, teamId, locationId) | ✅ Done | `src/employees/*`, `employees-page.component.*` |
-| 8 | Department manager assignment (managerId validation + UI) | ⏳ Next | schema has field, no FK relation yet |
+| 8 | Department manager assignment (managerId FK + validation + picker UI) | ✅ Done | `prisma/schema.prisma`, `organisation.service.ts`, `FE/pages/organisation/*` |
 | 9 | Delete safeguards (block if employees assigned) | ✅ Done | `organisation.service.ts` |
 | 10 | `organisation.manage` permission in seed catalog | ✅ Done | `prisma/seed.ts` |
 | 11 | Sample org seed data per demo tenant | ✅ Done | `prisma/seed.ts` |
@@ -443,6 +462,45 @@ Departments without a location appear under `"Unassigned Location"` (id: 0).
 3. Create a Location → Create a Department (select location) → Create a Team (select department)
 4. Switch to **Tree** tab — hierarchy renders under the location name with team employee counts
 5. Confirm another tenant's admin cannot see this tenant's org data (tenant isolation)
+
+---
+
+## 15) Recent Additions (BRD Gap-Fill)
+
+### 15.1 Employee Date of Birth
+- `dateOfBirth DateTime?` added to `Employee` model in `prisma/schema.prisma`.
+- `UpdateEmployeeDto` accepts optional `dateOfBirth` string (ISO date).
+- `employees.service.ts` update method persists DOB.
+- Used by `dashboard.service.ts` `getUpcomingBirthdays()` for employee view team birthdays.
+- Run `yarn prisma db push` after pull to apply schema changes.
+
+### 15.2 Leave Presets — Paternity Removed
+- `SRI_LANKA_LEAVE_POLICIES` in `src/leave/leave.constants.ts` no longer includes Paternity.
+- Default policies are: Annual, Casual, Sick, Medical, Maternity.
+- Existing tenant data is not affected (policy is only seeded on new tenants or empty tenants).
+
+### 15.3 Dashboard — BRD 6.1 Gap-Fill
+- `companyAdminMetrics()` now returns real data:
+  - `monthlyBurnRate` — gross payroll sum for current month (COMPLETED runs)
+  - `attendancePct` — today's clock-ins / total employees × 100
+  - `leaveTrendSeries` — approved leave count per month (last 7 months)
+  - `recentHires` — last 5 employees by joinedDate
+  - `recruitmentFunnel` — candidate counts by pipeline stage
+- `employeeMetrics()` now returns `teamBirthdays` (colleagues with DOB in next 30 days) and `upcomingHolidays` (next 5 Sri Lanka public holidays).
+
+### 15.4 Organisation — Department Manager Assignment
+- `Department` model now has FK relation `manager Employee?` on `managerId`.
+- `Employee` model has reverse `managedDepartments Department[]`.
+- `organisation.service.ts` validates manager belongs to the same tenant.
+- `findAllDepartments`, `createDepartment`, `updateDepartment`, `getTree` all include manager info.
+- Tree node includes `managerId` and `managerName` fields.
+
+### 15.5 Attendance Settings — Late/Early Config
+- New `AttendanceSettings` model (`attendance_settings` table) per tenant.
+- Fields: `workStartTime`, `workEndTime`, `lateArrivalGraceMinutes`, `lateArrivalAction`, `earlyDepartureGraceMinutes`, `earlyDepartureAction`.
+- `GET /api/attendance/settings` — returns (or auto-creates) tenant attendance settings.
+- `PATCH /api/attendance/settings` — updates settings (COMPANY_ADMIN / HR_MANAGER only).
+- Actions: `FLAG` (default), `DEDUCT`, `WARN`.
 
 ---
 

@@ -20,6 +20,8 @@ import { OrganisationModule } from './organisation/organisation.module';
 import { CrossTenantReportsModule } from './cross-tenant-reports/cross-tenant-reports.module';
 import { TenantConfigurationModule } from './tenant-configuration/tenant-configuration.module';
 import { CanteenModule } from './canteen/canteen.module';
+import { LettersModule } from './letters/letters.module';
+import { FeedbackModule } from './feedback/feedback.module';
 
 @Module({
   imports: [
@@ -43,6 +45,8 @@ import { CanteenModule } from './canteen/canteen.module';
     InvitationsModule,
     OrganisationModule,
     CanteenModule,
+    LettersModule,
+    FeedbackModule,
     CrossTenantReportsModule,
   ],
   providers: [],

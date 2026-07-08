@@ -36,4 +36,8 @@ export class SignupDto {
   @IsOptional()
   @IsString()
   notes?: string;
+
+  @IsOptional()
+  @IsString()
+  requestedPlan?: string;
 }

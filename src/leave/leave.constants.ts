@@ -63,16 +63,6 @@ export const SRI_LANKA_LEAVE_POLICIES: LeavePolicyPreset[] = [
     description: 'Maternity leave — 12 weeks (84 working days) per SL labour practice.',
     genderScope: 'FEMALE',
   },
-  {
-    code: 'paternity',
-    name: 'Paternity',
-    days: 3,
-    carryForwardLimit: 0,
-    accrualRate: 0,
-    sortOrder: 6,
-    description: 'Paternity leave — 3 days (recent SL practice).',
-    genderScope: 'MALE',
-  },
 ];
 
 export type LeaveSetupConfig = {

@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post, Put, UseGuards } from '@nestjs/common';
+import { Body, Controller, ForbiddenException, Get, Param, Post, Put, Req, UseGuards } from '@nestjs/common';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { Roles } from '../common/decorators/roles.decorator';
@@ -7,6 +7,10 @@ import { CreateModuleDefinitionDto } from './dto/create-module-definition.dto';
 import { SaveTenantConfigurationDto } from './dto/save-tenant-configuration.dto';
 import { SavePlatformBillingDto } from './dto/save-platform-billing.dto';
 import { SavePlatformPlansDto } from './dto/save-platform-plans.dto';
+import {
+  CreateTenantCustomFieldDto,
+  SaveCompanyAdminConfigurationDto,
+} from './dto/save-company-admin-configuration.dto';
 import { TenantConfigurationService } from './tenant-configuration.service';
 
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -25,10 +29,53 @@ export class TenantConfigurationController {
     return this.tenantConfigurationService.listPlatformPlans();
   }
 
+  @Get('tenant/configuration')
+  @Roles('COMPANY_ADMIN')
+  getOwnTenantConfiguration(@Req() req: { user?: { tenantId?: number | null } }) {
+    const tenantId = req.user?.tenantId;
+    if (!tenantId) {
+      throw new ForbiddenException('Tenant context required');
+    }
+    return this.tenantConfigurationService.getCompanyAdminConfiguration(tenantId);
+  }
+
+  @Put('tenant/configuration')
+  @Roles('COMPANY_ADMIN')
+  saveOwnTenantConfiguration(
+    @Req() req: { user?: { tenantId?: number | null } },
+    @Body() dto: SaveCompanyAdminConfigurationDto,
+  ) {
+    const tenantId = req.user?.tenantId;
+    if (!tenantId) {
+      throw new ForbiddenException('Tenant context required');
+    }
+    return this.tenantConfigurationService.saveCompanyAdminConfiguration(tenantId, dto);
+  }
+
+  @Post('tenant/modules/:key/fields')
+  @Roles('COMPANY_ADMIN')
+  createTenantCustomField(
+    @Req() req: { user?: { tenantId?: number | null } },
+    @Param('key') moduleKey: string,
+    @Body() dto: CreateTenantCustomFieldDto,
+  ) {
+    const tenantId = req.user?.tenantId;
+    if (!tenantId) {
+      throw new ForbiddenException('Tenant context required');
+    }
+    return this.tenantConfigurationService.createTenantCustomField(tenantId, moduleKey, dto);
+  }
+
   @Put('platform/plans')
   @Roles('SUPER_ADMIN')
-  async savePlatformPlans(@Body() dto: SavePlatformPlansDto) {
-    await this.tenantConfigurationService.savePlatformPlanCatalog(dto);
+  async savePlatformPlans(
+    @Req() req: { user?: { sub?: number }; ip?: string },
+    @Body() dto: SavePlatformPlansDto,
+  ) {
+    await this.tenantConfigurationService.savePlatformPlanCatalog(dto, {
+      userId: req.user?.sub ?? 0,
+      ipAddress: req.ip,
+    });
     return this.tenantConfigurationService.listPlatformPlans();
   }
 
@@ -40,8 +87,14 @@ export class TenantConfigurationController {
 
   @Put('platform/billing')
   @Roles('SUPER_ADMIN')
-  savePlatformBilling(@Body() dto: SavePlatformBillingDto) {
-    return this.tenantConfigurationService.savePlatformBillingConfig(dto);
+  savePlatformBilling(
+    @Req() req: { user?: { sub?: number }; ip?: string },
+    @Body() dto: SavePlatformBillingDto,
+  ) {
+    return this.tenantConfigurationService.savePlatformBillingConfig(dto, {
+      userId: req.user?.sub ?? 0,
+      ipAddress: req.ip,
+    });
   }
 
   @Post('platform/modules')

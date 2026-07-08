@@ -136,10 +136,6 @@ export class AuthService {
     const isSuperAdmin = roles.includes('SUPER_ADMIN');
 
     if (!isSuperAdmin) {
-      if (!dto.companyCode?.trim()) {
-        throw new UnauthorizedException('companyCode is required for tenant login.');
-      }
-
       if (!user.tenantId || !user.tenant) {
         throw new UnauthorizedException('Invalid tenant context for this user.');
       }
@@ -148,11 +144,14 @@ export class AuthService {
         throw new UnauthorizedException('Tenant company code is not configured.');
       }
 
-      const expectedCode = this.normalizeCompanyCode(user.tenant.companyCode);
-      const providedCode = this.normalizeCompanyCode(dto.companyCode);
+      // Optional client companyCode is validated when supplied; otherwise resolved from the user's tenant.
+      if (dto.companyCode?.trim()) {
+        const expectedCode = this.normalizeCompanyCode(user.tenant.companyCode);
+        const providedCode = this.normalizeCompanyCode(dto.companyCode);
 
-      if (providedCode !== expectedCode) {
-        throw new UnauthorizedException('Tenant login context mismatch.');
+        if (providedCode !== expectedCode) {
+          throw new UnauthorizedException('Tenant login context mismatch.');
+        }
       }
     }
 
@@ -438,7 +437,7 @@ export class AuthService {
       companyCode: dto.companyCode,
       adminName: dto.adminName,
       adminEmail: dto.adminEmail,
-      subscriptionPlan: 'FREEMIUM',
+      subscriptionPlan: dto.requestedPlan?.trim().toUpperCase() || 'FREEMIUM',
       config: {
         leadDetails: {
           adminPhone: dto.adminPhone?.trim() || null,
@@ -446,6 +445,7 @@ export class AuthService {
           address: dto.address?.trim() || null,
           source: dto.source?.trim() || 'Free signup page',
           notes: dto.notes?.trim() || null,
+          requestedPlan: dto.requestedPlan?.trim().toUpperCase() || 'FREEMIUM',
         },
       },
     });

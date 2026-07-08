@@ -2,6 +2,11 @@ import { BadRequestException, ForbiddenException, Injectable } from '@nestjs/com
 import { PrismaService } from '../prisma/prisma.service';
 import { CreatePayrollRunDto } from './dto/create-payroll-run.dto';
 import { UpdatePayrollRunDto } from './dto/update-payroll-run.dto';
+import {
+  SL_EPF_EMPLOYEE_RATE,
+  SL_EPF_EMPLOYER_RATE,
+  SL_ETF_EMPLOYER_RATE,
+} from './sri-lanka-statutory.constants';
 
 type RequestUser = { sub?: number; roles?: string[]; tenantId?: number } | undefined;
 
@@ -11,12 +16,9 @@ type RequestUser = { sub?: number; roles?: string[]; tenantId?: number } | undef
 function calculateStatutory(basicPay: number, allowances: number) {
   const grossPay = basicPay + allowances;
 
-  // EPF (Employee Provident Fund)
-  const epfEmployee = Math.round(grossPay * 0.08 * 100) / 100;  // 8%
-  const epfEmployer = Math.round(grossPay * 0.12 * 100) / 100;  // 12%
-
-  // ETF (Employee Trust Fund – employer only)
-  const etfEmployer = Math.round(grossPay * 0.03 * 100) / 100;  // 3%
+  const epfEmployee = Math.round(grossPay * SL_EPF_EMPLOYEE_RATE * 100) / 100;
+  const epfEmployer = Math.round(grossPay * SL_EPF_EMPLOYER_RATE * 100) / 100;
+  const etfEmployer = Math.round(grossPay * SL_ETF_EMPLOYER_RATE * 100) / 100;
 
   // PAYE – IRD monthly tax schedule (LKR, 2024)
   // Annual gross = grossPay * 12
@@ -130,23 +132,43 @@ export class PayrollService {
 
     const [periodYear, periodMonth] = run.period.split('-').map((value) => Number(value));
     const canteenDeductionByEmployee = new Map<number, number>();
+    const attendanceDeductionByEmployee = new Map<number, number>();
+    const overtimeAllowanceByEmployee = new Map<number, number>();
     if (Number.isInteger(periodYear) && Number.isInteger(periodMonth)) {
       const startDate = new Date(periodYear, periodMonth - 1, 1);
       const endDate = new Date(periodYear, periodMonth, 1);
-      const canteenEntries = await this.prisma.canteenMealEntry.findMany({
-        where: {
-          tenantId,
-          deductFromSalary: true,
-          date: {
-            gte: startDate,
-            lt: endDate,
+      const [canteenEntries, attendanceSettings, attendanceRows] = await Promise.all([
+        this.prisma.canteenMealEntry.findMany({
+          where: {
+            tenantId,
+            deductFromSalary: true,
+            date: {
+              gte: startDate,
+              lt: endDate,
+            },
           },
-        },
-        select: {
-          employeeId: true,
-          totalCost: true,
-        },
-      });
+          select: {
+            employeeId: true,
+            totalCost: true,
+          },
+        }),
+        this.prisma.attendanceSettings.findUnique({ where: { tenantId } }),
+        this.prisma.attendance.findMany({
+          where: {
+            date: {
+              gte: startDate,
+              lt: endDate,
+            },
+            employee: { tenantId },
+          },
+          select: {
+            employeeId: true,
+            payrollAdjustment: true,
+            overtimeHours: true,
+            status: true,
+          },
+        }),
+      ]);
 
       for (const entry of canteenEntries) {
         canteenDeductionByEmployee.set(
@@ -154,22 +176,67 @@ export class PayrollService {
           (canteenDeductionByEmployee.get(entry.employeeId) ?? 0) + entry.totalCost,
         );
       }
+
+      const payrollIntegration =
+        attendanceSettings?.payrollIntegration &&
+        typeof attendanceSettings.payrollIntegration === 'object'
+          ? (attendanceSettings.payrollIntegration as {
+              deductLateArrivals?: boolean;
+              deductEarlyDepartures?: boolean;
+              deductAbsences?: boolean;
+              includeOvertime?: boolean;
+            })
+          : null;
+
+      for (const row of attendanceRows) {
+        if (payrollIntegration?.deductLateArrivals || payrollIntegration?.deductEarlyDepartures) {
+          attendanceDeductionByEmployee.set(
+            row.employeeId,
+            (attendanceDeductionByEmployee.get(row.employeeId) ?? 0) + (row.payrollAdjustment ?? 0),
+          );
+        }
+
+        if (payrollIntegration?.deductAbsences && row.status === 'ABSENT') {
+          const employee = employees.find((item) => item.id === row.employeeId);
+          if (employee) {
+            const dailySalary = employee.salary / 22;
+            attendanceDeductionByEmployee.set(
+              row.employeeId,
+              (attendanceDeductionByEmployee.get(row.employeeId) ?? 0) + dailySalary,
+            );
+          }
+        }
+
+        if (payrollIntegration?.includeOvertime && row.overtimeHours > 0) {
+          const employee = employees.find((item) => item.id === row.employeeId);
+          if (employee) {
+            const hourlyRate = employee.salary / (22 * 8);
+            overtimeAllowanceByEmployee.set(
+              row.employeeId,
+              (overtimeAllowanceByEmployee.get(row.employeeId) ?? 0) + row.overtimeHours * hourlyRate,
+            );
+          }
+        }
+      }
     }
 
     const payslipData = employees.map((emp) => {
       const statutory =
         calculateStatutory(emp.salary, 0);
       const canteenDeduction = Math.round((canteenDeductionByEmployee.get(emp.id) ?? 0) * 100) / 100;
-      const deductions = Math.round((statutory.deductions + canteenDeduction) * 100) / 100;
-      const netPay = Math.round((statutory.grossPay - deductions) * 100) / 100;
-      totalGross += statutory.grossPay;
+      const attendanceDeduction = Math.round((attendanceDeductionByEmployee.get(emp.id) ?? 0) * 100) / 100;
+      const overtimeAllowance = Math.round((overtimeAllowanceByEmployee.get(emp.id) ?? 0) * 100) / 100;
+      const grossPay = Math.round((statutory.grossPay + overtimeAllowance) * 100) / 100;
+      const deductions = Math.round((statutory.deductions + canteenDeduction + attendanceDeduction) * 100) / 100;
+      const netPay = Math.round((grossPay - deductions) * 100) / 100;
+      totalGross += grossPay;
       totalNet += netPay;
       return {
         employeeId: emp.id,
         payrollRunId: id,
         basicPay: emp.salary,
-        allowances: 0,
-        grossPay: statutory.grossPay,
+        allowances: overtimeAllowance,
+        grossPay,
         epfEmployee: statutory.epfEmployee,
         epfEmployer: statutory.epfEmployer,
         etfEmployer: statutory.etfEmployer,

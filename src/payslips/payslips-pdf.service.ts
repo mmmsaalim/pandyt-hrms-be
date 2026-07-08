@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { SL_STATUTORY_LABELS } from '../payroll/sri-lanka-statutory.constants';
 
 @Injectable()
 export class PayslipsPdfService {
@@ -123,11 +124,11 @@ export class PayslipsPdfService {
     </tr>
 
     <tr class="section-header">
-      <td class="label">DEDUCTIONS</td>
+      <td class="label">${SL_STATUTORY_LABELS.employeeDeductions.toUpperCase()}</td>
       <td>Amount (LKR)</td>
     </tr>
     <tr>
-      <td class="label">EPF (Employee 8%)</td>
+      <td class="label">${SL_STATUTORY_LABELS.epfEmployee}</td>
       <td>${data.epfEmployee.toFixed(2)}</td>
     </tr>
     <tr>
@@ -147,15 +148,15 @@ export class PayslipsPdfService {
 
   <table>
     <tr class="section-header">
-      <td class="label">EMPLOYER CONTRIBUTIONS (Non-taxable)</td>
+      <td class="label">${SL_STATUTORY_LABELS.employerContributions}</td>
       <td>Amount (LKR)</td>
     </tr>
     <tr>
-      <td class="label">EPF (Employer 12%)</td>
+      <td class="label">${SL_STATUTORY_LABELS.epfEmployer}</td>
       <td>${data.epfEmployer.toFixed(2)}</td>
     </tr>
     <tr>
-      <td class="label">ETF (Employer 3%)</td>
+      <td class="label">${SL_STATUTORY_LABELS.etfEmployer}</td>
       <td>${data.etfEmployer.toFixed(2)}</td>
     </tr>
   </table>

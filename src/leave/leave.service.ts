@@ -33,6 +33,57 @@ export class LeaveService {
     return leaveEnd < today;
   }
 
+  private parseLeaveDateOnly(value: string): Date {
+    const iso = value.trim().split('T')[0];
+    const [year, month, day] = iso.split('-').map(Number);
+    return new Date(year, month - 1, day);
+  }
+
+  private tomorrowStart(): Date {
+    const date = new Date();
+    date.setHours(0, 0, 0, 0);
+    date.setDate(date.getDate() + 1);
+    return date;
+  }
+
+  private validateLeaveDates(
+    startDate: string,
+    endDate: string,
+    days: number,
+    options: { allowPastDates: boolean },
+  ): number {
+    const start = this.parseLeaveDateOnly(startDate);
+    const end = this.parseLeaveDateOnly(endDate);
+    start.setHours(0, 0, 0, 0);
+    end.setHours(0, 0, 0, 0);
+
+    if (end < start) {
+      throw new BadRequestException('End date cannot be before start date.');
+    }
+
+    if (!options.allowPastDates && start < this.tomorrowStart()) {
+      throw new BadRequestException('Leave can only be requested from tomorrow onwards.');
+    }
+
+    const calculatedDays = Math.floor((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24)) + 1;
+    if (days !== calculatedDays) {
+      throw new BadRequestException(
+        `Leave days (${days}) must match the selected date range (${calculatedDays} day(s)).`,
+      );
+    }
+
+    return calculatedDays;
+  }
+
+  private canBackdateLeave(user: RequestUser, status?: string): boolean {
+    const isManualStatus = status === 'APPROVED' || status === 'REJECTED';
+    const isManager =
+      this.hasRole(user, 'COMPANY_ADMIN') ||
+      this.hasRole(user, 'HR_MANAGER') ||
+      (this.hasRole(user, 'TEAM_LEAD') && this.hasPermission(user, 'leave.manage'));
+    return isManualStatus && isManager;
+  }
+
   private async getEmployeeContext(userId: number) {
     return this.prisma.employee.findUnique({
       where: { userId },
@@ -159,6 +210,9 @@ export class LeaveService {
         throw new ForbiddenException(`Insufficient leave balance. Requested ${dto.days} but only ${available} available.`);
       }
     }
+
+    const allowPastDates = this.canBackdateLeave(user, dto.status);
+    this.validateLeaveDates(dto.startDate, dto.endDate, dto.days, { allowPastDates });
 
     let approvedById: number | null = null;
     if (dto.status === 'APPROVED' || dto.status === 'REJECTED') {
@@ -314,25 +368,34 @@ export class LeaveService {
       throw new ForbiddenException('Unauthorized role access.');
     }
 
-    const adminEmployeeContext = await this.getEmployeeContext(user.sub);
-    if (!adminEmployeeContext) {
+    const actorContext = await this.getEmployeeContext(user.sub);
+    if (!actorContext) {
       throw new ForbiddenException('Employee profile not found for this user.');
     }
 
     const leaveRequest = await this.prisma.leaveRequest.findUnique({
       where: { id },
       select: {
+        id: true,
+        status: true,
         employee: {
-          select: { tenantId: true },
+          select: { id: true, tenantId: true, userId: true },
         },
       },
     });
 
-    if (
-      !leaveRequest ||
-      leaveRequest.employee.tenantId !== adminEmployeeContext.tenantId
-    ) {
+    if (!leaveRequest || leaveRequest.employee.tenantId !== actorContext.tenantId) {
       throw new ForbiddenException('Cannot remove leave for another tenant.');
+    }
+
+    const isOwner = leaveRequest.employee.userId === user.sub;
+
+    if (leaveRequest.status !== 'PENDING') {
+      throw new BadRequestException('Only pending leave requests can be withdrawn.');
+    }
+
+    if (!isOwner) {
+      throw new ForbiddenException('You can only withdraw your own pending leave requests.');
     }
 
     return this.prisma.leaveRequest.delete({ where: { id } });

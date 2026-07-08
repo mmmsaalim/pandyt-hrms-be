@@ -173,8 +173,13 @@ model Tenant {
   billingDispatchLogs BillingReminderDispatch[]
   moduleSettings TenantModuleSetting[]
   fieldSettings  TenantFieldSetting[]
+  attendanceSettings AttendanceSettings?
+  workShifts         WorkShift[]
+  companyHolidays    CompanyHoliday[]
   canteenSettings CanteenSettings?
   canteenMealEntries CanteenMealEntry[]
+  hrLetters      HrLetter[]
+  hrFeedback     HrFeedback[]
 }
 
 model ModuleDefinition {
@@ -295,6 +300,7 @@ model Employee {
   department       String
   designation      String
   joinedDate       DateTime
+  dateOfBirth      DateTime?
   salary           Float            @default(0)
   employmentStatus EmploymentStatus @default(ACTIVE)
   deletedAt        DateTime?
@@ -312,12 +318,81 @@ model Employee {
   location         Location?        @relation(fields: [locationId], references: [id], onDelete: SetNull)
   manager          Employee?        @relation("EmployeeToManager", fields: [managerId], references: [id], onDelete: SetNull)
   directReports    Employee[]       @relation("EmployeeToManager")
+  managedDepartments Department[]   @relation("DepartmentManager")
+  shiftId          Int?
+  shift            WorkShift?       @relation(fields: [shiftId], references: [id], onDelete: SetNull)
   leaveRequests    LeaveRequest[]
   approvedLeaves   LeaveRequest[]   @relation("ApprovedLeaves")
   attendance       Attendance[]
   payslips         Payslip[]
   leaveBalances    LeaveBalance[]
   canteenMealEntries CanteenMealEntry[]
+}
+
+model AttendanceSettings {
+  id                           Int      @id @default(autoincrement())
+  tenantId                     Int      @unique
+  scheduleMode                 String   @default("FIXED")
+  workStartTime                String   @default("09:00")
+  workEndTime                  String   @default("17:00")
+  lateArrivalGraceMinutes      Int      @default(0)
+  lateArrivalAction            String   @default("FLAG")
+  lateArrivalRepeatedThreshold Int      @default(3)
+  lateArrivalEscalationAction  String   @default("WARN")
+  earlyDepartureGraceMinutes   Int      @default(0)
+  earlyDepartureAction         String   @default("FLAG")
+  weekendDays                  Json     @default("[6,0]")
+  overtimeEnabled              Boolean  @default(false)
+  overtimeRules                Json     @default("{}")
+  missingClockInAction         String   @default("FLAG")
+  missingClockOutAction        String   @default("FLAG")
+  missingBothAction            String   @default("ABSENT")
+  autoAbsentEnabled            Boolean  @default(true)
+  requireManagerApproval       Boolean  @default(false)
+  payrollIntegration           Json     @default("{}")
+  createdAt                    DateTime @default(now())
+  updatedAt                    DateTime @updatedAt
+  tenant                       Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@map("attendance_settings")
+}
+
+model WorkShift {
+  id                   Int        @id @default(autoincrement())
+  tenantId             Int
+  name                 String
+  startTime            String
+  endTime              String
+  breakMinutes         Int        @default(0)
+  isNightShift         Boolean    @default(false)
+  isDefault            Boolean    @default(false)
+  isActive             Boolean    @default(true)
+  overtimeEligible     Boolean    @default(true)
+  flexibleGraceMinutes Int        @default(0)
+  createdAt            DateTime   @default(now())
+  updatedAt            DateTime   @updatedAt
+  tenant               Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  employees            Employee[]
+
+  @@unique([tenantId, name])
+  @@index([tenantId])
+  @@map("work_shifts")
+}
+
+model CompanyHoliday {
+  id          Int      @id @default(autoincrement())
+  tenantId    Int
+  name        String
+  date        DateTime
+  isRecurring Boolean  @default(false)
+  isPaid      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, date])
+  @@index([tenantId, date])
+  @@map("company_holidays")
 }
 
 model CanteenSettings {
@@ -376,14 +451,20 @@ model LeaveRequest {
 }
 
 model Attendance {
-  id         Int      @id @default(autoincrement())
-  employeeId Int
-  date       DateTime
-  clockIn    DateTime?
-  clockOut   DateTime?
-  hours      Float    @default(0)
-  status     String
-  employee   Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  id                    Int      @id @default(autoincrement())
+  employeeId            Int
+  date                  DateTime
+  clockIn               DateTime?
+  clockOut              DateTime?
+  hours                 Float    @default(0)
+  status                String
+  lateMinutes           Int      @default(0)
+  earlyDepartureMinutes Int      @default(0)
+  overtimeHours         Float    @default(0)
+  payrollAdjustment     Float    @default(0)
+  source                String   @default("CLOCK")
+  notes                 String?
+  employee              Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
 
   @@unique([employeeId, date])
 }
@@ -471,6 +552,7 @@ model Department {
   locationId  Int?
   tenant      Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   location    Location?  @relation(fields: [locationId], references: [id], onDelete: SetNull)
+  manager     Employee?  @relation("DepartmentManager", fields: [managerId], references: [id], onDelete: SetNull)
   teams       Team[]
   employees   Employee[] @relation("EmployeeDepartment")
 }
@@ -529,4 +611,37 @@ model PasswordResetToken {
 
   @@index([userId])
   @@map("password_reset_tokens")
+}
+
+model HrLetter {
+  id            Int      @id @default(autoincrement())
+  tenantId      Int
+  title         String
+  letterType    String   @default("GENERAL")
+  recipientName String?
+  body          String
+  status        String   @default("DRAFT")
+  createdBy     Int
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  tenant        Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@map("hr_letters")
+}
+
+model HrFeedback {
+  id            Int      @id @default(autoincrement())
+  tenantId      Int
+  authorUserId  Int
+  subjectLabel  String?
+  category      String   @default("GENERAL")
+  rating        Int?
+  body          String
+  contextModule String?
+  createdAt     DateTime @default(now())
+  tenant        Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, createdAt])
+  @@map("hr_feedback")
 }

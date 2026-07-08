@@ -92,7 +92,7 @@ export class LeaveController {
   }
 
   @Delete(':id')
-  @Roles('COMPANY_ADMIN', 'HR_MANAGER')
+  @Roles('COMPANY_ADMIN', 'HR_MANAGER', 'TEAM_LEAD', 'EMPLOYEE')
   remove(
     @Param('id', ParseIntPipe) id: number,
     @Req() req: { user?: { sub: number; roles?: string[] } },

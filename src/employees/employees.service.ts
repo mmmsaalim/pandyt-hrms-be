@@ -349,7 +349,14 @@ export class EmployeesService {
 
     const employee = await this.prisma.employee.findUnique({
       where: { id },
-      include: { user: true, tenant: true },
+      include: {
+        user: true,
+        tenant: true,
+        departmentRelation: { select: { id: true, name: true } },
+        team: { select: { id: true, name: true } },
+        location: { select: { id: true, name: true } },
+        manager: { select: { id: true, employeeCode: true, user: { select: { firstName: true, lastName: true } } } },
+      },
     });
 
     if (!employee || employee.deletedAt !== null) {
@@ -787,6 +794,7 @@ export class EmployeesService {
     if (dto.employmentStatus !== undefined) updateData.employmentStatus = dto.employmentStatus;
     if (dto.salary !== undefined) updateData.salary = dto.salary;
     if (dto.joinedDate) updateData.joinedDate = new Date(dto.joinedDate);
+    if (dto.dateOfBirth !== undefined) updateData.dateOfBirth = dto.dateOfBirth ? new Date(dto.dateOfBirth) : null;
 
     if (hasOrgFields) {
       const current = await this.prisma.employee.findUnique({

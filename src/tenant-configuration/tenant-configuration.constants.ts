@@ -86,12 +86,19 @@ export const DEFAULT_EMPLOYEE_PROFILE_FIELDS = [
   'nic',
   'epfNo',
   'etfNo',
+  'tinNo',
   'dateOfBirth',
   'phone',
   'gender',
   'emergencyContact',
   'employmentType',
+  'address',
+  'bankName',
+  'bankBranch',
+  'bankAccount',
 ] as const;
+
+export const EMPLOYEE_BANK_FIELD_KEYS = ['bankName', 'bankBranch', 'bankAccount'] as const;
 
 export const DEFAULT_TENANT_CONFIG = {
   locale: 'en-LK',
@@ -180,7 +187,8 @@ export type PlatformBillingConfig = {
 
 export const DEFAULT_PLATFORM_BILLING: PlatformBillingConfig = {
   taxRate: 0.18,
-  overageSeatPriceLkr: 500,
+  /** Per extra employee beyond plan seat limit (LKR / month). Editable by Super Admin. */
+  overageSeatPriceLkr: 50,
   plans: Object.fromEntries(
     PLAN_CATALOG.map((plan) => [
       plan.key,
