@@ -40,6 +40,7 @@ export class PayslipsPdfService {
       payPeriod: payrollRun.period,
       basicPay: payslip.basicPay,
       allowances: payslip.allowances,
+      attendanceDeduction: (payslip as { attendanceDeduction?: number }).attendanceDeduction ?? 0,
       grossPay: payslip.grossPay,
       epfEmployee: payslip.epfEmployee,
       payeTax: payslip.payeTax,
@@ -61,6 +62,7 @@ export class PayslipsPdfService {
     payPeriod: string;
     basicPay: number;
     allowances: number;
+    attendanceDeduction: number;
     grossPay: number;
     epfEmployee: number;
     payeTax: number;
@@ -115,7 +117,7 @@ export class PayslipsPdfService {
       <td>${data.basicPay.toFixed(2)}</td>
     </tr>
     <tr>
-      <td class="label">Allowances</td>
+      <td class="label">Overtime Allowance</td>
       <td>${data.allowances.toFixed(2)}</td>
     </tr>
     <tr class="total-row">
@@ -134,6 +136,10 @@ export class PayslipsPdfService {
     <tr>
       <td class="label">PAYE Tax</td>
       <td>${data.payeTax.toFixed(2)}</td>
+    </tr>
+    <tr>
+      <td class="label">Attendance Deduction (late / early / absent)</td>
+      <td>${data.attendanceDeduction.toFixed(2)}</td>
     </tr>
     <tr class="total-row">
       <td class="label">Total Deductions</td>

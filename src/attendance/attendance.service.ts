@@ -1,4 +1,4 @@
-import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateAttendanceDto } from './dto/create-attendance.dto';
@@ -40,6 +40,7 @@ export class AttendanceService {
             startTime: true,
             endTime: true,
             breakMinutes: true,
+            overtimeEligible: true,
           },
         },
       },
@@ -61,7 +62,8 @@ export class AttendanceService {
     });
   }
 
-  private resolveSchedule(
+  private async resolveSchedule(
+    tenantId: number,
     settings: { workStartTime: string; workEndTime: string },
     shift?: { startTime: string; endTime: string; breakMinutes: number } | null,
   ) {
@@ -70,6 +72,17 @@ export class AttendanceService {
         workStartTime: shift.startTime,
         workEndTime: shift.endTime,
         breakMinutes: shift.breakMinutes,
+      };
+    }
+
+    const defaultShift = await this.prisma.workShift.findFirst({
+      where: { tenantId, isDefault: true, isActive: true },
+    });
+    if (defaultShift) {
+      return {
+        workStartTime: defaultShift.startTime,
+        workEndTime: defaultShift.endTime,
+        breakMinutes: defaultShift.breakMinutes,
       };
     }
 
@@ -136,14 +149,28 @@ export class AttendanceService {
     if (this.hasRole(user, 'EMPLOYEE')) {
       return this.prisma.attendance.findMany({
         where: { employeeId: employeeContext.id },
-        include: { employee: { include: { user: true } } },
+        include: {
+          employee: {
+            select: {
+              salary: true,
+              user: { select: { firstName: true, lastName: true, email: true } },
+            },
+          },
+        },
       });
     }
 
     if (this.hasRole(user, 'COMPANY_ADMIN') || this.hasRole(user, 'HR_MANAGER')) {
       return this.prisma.attendance.findMany({
         where: { employee: { tenantId: employeeContext.tenantId } },
-        include: { employee: { include: { user: true } } },
+        include: {
+          employee: {
+            select: {
+              salary: true,
+              user: { select: { firstName: true, lastName: true, email: true } },
+            },
+          },
+        },
       });
     }
 
@@ -155,7 +182,14 @@ export class AttendanceService {
             managerId: employeeContext.id,
           },
         },
-        include: { employee: { include: { user: true } } },
+        include: {
+          employee: {
+            select: {
+              salary: true,
+              user: { select: { firstName: true, lastName: true, email: true } },
+            },
+          },
+        },
       });
     }
 
@@ -192,7 +226,11 @@ export class AttendanceService {
       throw new ForbiddenException('You have already clocked in for today.');
     }
 
-    const schedule = this.resolveSchedule(settings, employeeContext.shift);
+    const schedule = await this.resolveSchedule(
+      employeeContext.tenantId,
+      settings,
+      employeeContext.shift,
+    );
     const dayContext = await this.getDayContext(
       employeeContext.tenantId,
       employeeContext.id,
@@ -210,6 +248,11 @@ export class AttendanceService {
       0,
       true,
       !!existing?.clockOut,
+      {
+        missingClockInAction: settings.missingClockInAction,
+        missingClockOutAction: settings.missingClockOutAction,
+        missingBothAction: settings.missingBothAction,
+      },
     );
 
     const data = {
@@ -273,71 +316,168 @@ export class AttendanceService {
       throw new ForbiddenException('You have already clocked out for today.');
     }
 
-    const schedule = this.resolveSchedule(settings, employeeContext.shift);
+    const schedule = await this.resolveSchedule(
+      employeeContext.tenantId,
+      settings,
+      employeeContext.shift,
+    );
     const dayContext = await this.getDayContext(
       employeeContext.tenantId,
       employeeContext.id,
       today,
       settings,
     );
-    const lateMinutes = existing.lateMinutes;
-    const earlyMinutes = this.calculation.computeEarlyDepartureMinutes(
-      now,
+    const metrics = await this.computeAttendanceMetrics({
+      tenantId: employeeContext.tenantId,
+      employeeId: employeeContext.id,
+      salary: employeeContext.salary,
+      overtimeEligible: employeeContext.shift?.overtimeEligible ?? true,
+      settings,
       schedule,
-      settings.earlyDepartureGraceMinutes,
-    );
-    const hours = this.calculation.computeWorkedHours(
-      new Date(existing.clockIn),
-      now,
-      schedule.breakMinutes,
-    );
-    const overtimeRules = this.calculation.resolveOvertimeRules(settings.overtimeRules);
-    const overtimeHours = settings.overtimeEnabled
-      ? this.calculation.computeOvertimeHours(
-          new Date(existing.clockIn),
-          now,
-          schedule,
-          overtimeRules,
-          dayContext,
-        )
-      : 0;
-    const payrollIntegration = this.calculation.resolvePayrollIntegration(settings.payrollIntegration);
-    const scheduledStart = this.calculation.parseTimeOnDate(schedule.workStartTime, today);
-    const scheduledEnd = this.calculation.parseTimeOnDate(schedule.workEndTime, today);
-    const scheduledHours = Math.max(
-      0,
-      (scheduledEnd.getTime() - scheduledStart.getTime()) / (1000 * 60 * 60) -
-        (schedule.breakMinutes ?? 0) / 60,
-    );
-    const dailySalary = employeeContext.salary / 22;
-    const payrollAdjustment = this.calculation.estimatePayrollAdjustment(
-      dailySalary,
-      scheduledHours,
-      lateMinutes,
-      earlyMinutes,
-      settings.lateArrivalAction,
-      settings.earlyDepartureAction,
-      payrollIntegration,
-    );
-    const status = this.calculation.resolveAttendanceStatus(
       dayContext,
-      lateMinutes,
-      earlyMinutes,
-      true,
-      true,
-    );
+      date: today,
+      clockIn: new Date(existing.clockIn),
+      clockOut: now,
+      existingLateMinutes: existing.lateMinutes,
+    });
 
     return this.prisma.attendance.update({
       where: { id: existing.id },
       data: {
         clockOut: now,
-        hours,
-        earlyDepartureMinutes: earlyMinutes,
-        overtimeHours,
-        payrollAdjustment,
-        status,
+        hours: metrics.hours,
+        earlyDepartureMinutes: metrics.earlyDepartureMinutes,
+        overtimeHours: metrics.overtimeHours,
+        payrollAdjustment: metrics.payrollAdjustment,
+        status: metrics.status,
       },
     });
+  }
+
+  private async countMonthlyLateArrivals(employeeId: number, date: Date, lateMinutesToday: number): Promise<number> {
+    const monthStart = new Date(date.getFullYear(), date.getMonth(), 1);
+    const monthEnd = new Date(date.getFullYear(), date.getMonth() + 1, 1);
+    const dayStart = new Date(date);
+    dayStart.setHours(0, 0, 0, 0);
+
+    const priorLateCount = await this.prisma.attendance.count({
+      where: {
+        employeeId,
+        date: { gte: monthStart, lt: monthEnd, not: dayStart },
+        lateMinutes: { gt: 0 },
+      },
+    });
+
+    return priorLateCount + (lateMinutesToday > 0 ? 1 : 0);
+  }
+
+  private async computeAttendanceMetrics(input: {
+    tenantId: number;
+    employeeId: number;
+    salary: number;
+    overtimeEligible: boolean;
+    settings: {
+      workStartTime: string;
+      workEndTime: string;
+      lateArrivalGraceMinutes: number;
+      earlyDepartureGraceMinutes: number;
+      lateArrivalAction: string;
+      lateArrivalRepeatedThreshold: number;
+      lateArrivalEscalationAction: string;
+      earlyDepartureAction: string;
+      overtimeEnabled: boolean;
+      overtimeRules: unknown;
+      payrollIntegration: unknown;
+      missingClockInAction: string;
+      missingClockOutAction: string;
+      missingBothAction: string;
+    };
+    schedule: { workStartTime: string; workEndTime: string; breakMinutes: number };
+    dayContext: Awaited<ReturnType<AttendanceService['getDayContext']>>;
+    date: Date;
+    clockIn: Date;
+    clockOut: Date;
+    existingLateMinutes?: number;
+  }) {
+    const lateMinutes =
+      input.existingLateMinutes !== undefined
+        ? input.existingLateMinutes
+        : this.calculation.computeLateMinutes(
+            input.clockIn,
+            input.schedule,
+            input.settings.lateArrivalGraceMinutes,
+          );
+    const earlyMinutes = this.calculation.computeEarlyDepartureMinutes(
+      input.clockOut,
+      input.schedule,
+      input.settings.earlyDepartureGraceMinutes,
+    );
+    const hours = this.calculation.computeWorkedHours(
+      input.clockIn,
+      input.clockOut,
+      input.schedule.breakMinutes,
+    );
+    const overtimeRules = this.calculation.resolveOvertimeRules(input.settings.overtimeRules);
+    const overtimeHours =
+      input.settings.overtimeEnabled && overtimeRules.enabled && input.overtimeEligible
+        ? this.calculation.computeOvertimeHours(
+            input.clockIn,
+            input.clockOut,
+            input.schedule,
+            overtimeRules,
+            input.dayContext,
+          )
+        : 0;
+    const payrollIntegration = this.calculation.resolvePayrollIntegration(
+      input.settings.payrollIntegration,
+    );
+    const scheduledStart = this.calculation.parseTimeOnDate(input.schedule.workStartTime, input.date);
+    const scheduledEnd = this.calculation.parseTimeOnDate(input.schedule.workEndTime, input.date);
+    const scheduledHours = Math.max(
+      0,
+      (scheduledEnd.getTime() - scheduledStart.getTime()) / (1000 * 60 * 60) -
+        input.schedule.breakMinutes / 60,
+    );
+    const dailySalary = input.salary / 22;
+    const monthlyLateCount = await this.countMonthlyLateArrivals(
+      input.employeeId,
+      input.date,
+      lateMinutes,
+    );
+    const lateAction =
+      monthlyLateCount >= input.settings.lateArrivalRepeatedThreshold
+        ? input.settings.lateArrivalEscalationAction
+        : input.settings.lateArrivalAction;
+    const payrollAdjustment = this.calculation.estimatePayrollAdjustment(
+      dailySalary,
+      scheduledHours,
+      lateMinutes,
+      earlyMinutes,
+      lateAction,
+      input.settings.earlyDepartureAction,
+      payrollIntegration,
+    );
+    const status = this.calculation.resolveAttendanceStatus(
+      input.dayContext,
+      lateMinutes,
+      earlyMinutes,
+      true,
+      true,
+      {
+        missingClockInAction: input.settings.missingClockInAction,
+        missingClockOutAction: input.settings.missingClockOutAction,
+        missingBothAction: input.settings.missingBothAction,
+      },
+    );
+
+    return {
+      lateMinutes,
+      earlyDepartureMinutes: earlyMinutes,
+      hours,
+      overtimeHours,
+      payrollAdjustment,
+      status,
+    };
   }
 
   async override(
@@ -355,7 +495,19 @@ export class AttendanceService {
 
     const targetEmployee = await this.prisma.employee.findUnique({
       where: { id: dto.employeeId },
-      select: { tenantId: true, managerId: true },
+      select: {
+        tenantId: true,
+        managerId: true,
+        salary: true,
+        shift: {
+          select: {
+            startTime: true,
+            endTime: true,
+            breakMinutes: true,
+            overtimeEligible: true,
+          },
+        },
+      },
     });
 
     if (!targetEmployee || targetEmployee.tenantId !== adminContext.tenantId) {
@@ -381,19 +533,62 @@ export class AttendanceService {
     const clockInDate = dto.clockIn ? new Date(dto.clockIn) : null;
     const clockOutDate = dto.clockOut ? new Date(dto.clockOut) : null;
 
-    let computedHours = 0;
-    if (clockInDate && clockOutDate) {
-      computedHours = this.calculation.computeWorkedHours(clockInDate, clockOutDate);
-    }
+    const settings = await this.ensureSettings(targetEmployee.tenantId);
+    const schedule = await this.resolveSchedule(targetEmployee.tenantId, settings, targetEmployee.shift);
+    const dayContext = await this.getDayContext(targetEmployee.tenantId, dto.employeeId, date, settings);
 
-    const payload = {
+    let payload: Prisma.AttendanceUncheckedUpdateInput = {
       clockIn: clockInDate,
       clockOut: clockOutDate,
-      hours: computedHours,
-      status: `MANUAL_OVERRIDE: ${dto.reason.substring(0, 50)}`,
       source: 'OVERRIDE',
       notes: dto.reason,
     };
+
+    if (clockInDate && clockOutDate) {
+      const metrics = await this.computeAttendanceMetrics({
+        tenantId: targetEmployee.tenantId,
+        employeeId: dto.employeeId,
+        salary: targetEmployee.salary,
+        overtimeEligible: targetEmployee.shift?.overtimeEligible ?? true,
+        settings,
+        schedule,
+        dayContext,
+        date,
+        clockIn: clockInDate,
+        clockOut: clockOutDate,
+      });
+      payload = {
+        ...payload,
+        hours: metrics.hours,
+        lateMinutes: metrics.lateMinutes,
+        earlyDepartureMinutes: metrics.earlyDepartureMinutes,
+        overtimeHours: metrics.overtimeHours,
+        payrollAdjustment: metrics.payrollAdjustment,
+        status: `MANUAL_OVERRIDE:${metrics.status}`,
+      };
+    } else {
+      const status = this.calculation.resolveAttendanceStatus(
+        dayContext,
+        0,
+        0,
+        !!clockInDate,
+        !!clockOutDate,
+        {
+          missingClockInAction: settings.missingClockInAction,
+          missingClockOutAction: settings.missingClockOutAction,
+          missingBothAction: settings.missingBothAction,
+        },
+      );
+      payload = {
+        ...payload,
+        hours: 0,
+        lateMinutes: 0,
+        earlyDepartureMinutes: 0,
+        overtimeHours: 0,
+        payrollAdjustment: 0,
+        status: `MANUAL_OVERRIDE:${status}`,
+      };
+    }
 
     if (existing) {
       return this.prisma.attendance.update({
@@ -406,11 +601,16 @@ export class AttendanceService {
       data: {
         employeeId: dto.employeeId,
         date,
-        lateMinutes: 0,
-        earlyDepartureMinutes: 0,
-        overtimeHours: 0,
-        payrollAdjustment: 0,
-        ...payload,
+        lateMinutes: (payload.lateMinutes as number | undefined) ?? 0,
+        earlyDepartureMinutes: (payload.earlyDepartureMinutes as number | undefined) ?? 0,
+        overtimeHours: (payload.overtimeHours as number | undefined) ?? 0,
+        payrollAdjustment: (payload.payrollAdjustment as number | undefined) ?? 0,
+        hours: (payload.hours as number | undefined) ?? 0,
+        status: (payload.status as string | undefined) ?? 'MANUAL_OVERRIDE:INCOMPLETE',
+        clockIn: clockInDate,
+        clockOut: clockOutDate,
+        source: 'OVERRIDE',
+        notes: dto.reason,
       },
     });
   }
@@ -546,11 +746,24 @@ export class AttendanceService {
     if (!context) throw new ForbiddenException('Employee profile not found.');
     const tenantId = context.tenantId;
 
+    const existing = await this.ensureSettings(tenantId);
+    const overtimeRules =
+      dto.overtimeRules !== undefined || dto.overtimeEnabled !== undefined
+        ? (this.calculation.normalizeSettings(
+            {
+              ...(existing.overtimeRules && typeof existing.overtimeRules === 'object'
+                ? (existing.overtimeRules as Record<string, unknown>)
+                : {}),
+              ...(dto.overtimeRules ?? {}),
+              ...(dto.overtimeEnabled !== undefined ? { enabled: dto.overtimeEnabled } : {}),
+            } as Record<string, unknown>,
+            DEFAULT_OVERTIME_RULES,
+          ) as Prisma.InputJsonValue)
+        : undefined;
+
     const data = {
       ...dto,
-      overtimeRules: dto.overtimeRules
-        ? (this.calculation.normalizeSettings(dto.overtimeRules, DEFAULT_OVERTIME_RULES) as Prisma.InputJsonValue)
-        : undefined,
+      overtimeRules,
       payrollIntegration: dto.payrollIntegration
         ? (this.calculation.normalizeSettings(
             dto.payrollIntegration,
@@ -586,6 +799,9 @@ export class AttendanceService {
 
   async createShift(dto: UpsertWorkShiftDto, user: RequestUser) {
     const context = await this.requireTenantContext(user);
+    if (!dto.name?.trim() || !dto.startTime || !dto.endTime) {
+      throw new BadRequestException('Shift name, start time, and end time are required.');
+    }
     if (dto.isDefault) {
       await this.prisma.workShift.updateMany({
         where: { tenantId: context.tenantId, isDefault: true },

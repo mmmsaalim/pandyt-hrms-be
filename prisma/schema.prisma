@@ -487,6 +487,7 @@ model Payslip {
   payrollRunId Int
   basicPay     Float         @default(0)
   allowances   Float         @default(0)
+  attendanceDeduction Float  @default(0)
   grossPay     Float
   epfEmployee  Float         @default(0)
   epfEmployer  Float         @default(0)

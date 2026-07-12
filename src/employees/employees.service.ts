@@ -111,6 +111,27 @@ export class EmployeesService {
     return managerId;
   }
 
+  private async resolveShiftId(tenantId: number, shiftId: number | null | undefined): Promise<number | null | undefined> {
+    if (shiftId === undefined) {
+      return undefined;
+    }
+
+    if (shiftId === null) {
+      return null;
+    }
+
+    const shift = await this.prisma.workShift.findFirst({
+      where: { id: shiftId, tenantId, isActive: true },
+      select: { id: true },
+    });
+
+    if (!shift) {
+      throw new NotFoundException('Work shift not found in this tenant.');
+    }
+
+    return shiftId;
+  }
+
   private async resolveOrgAssignment(
     tenantId: number,
     input: {
@@ -300,6 +321,7 @@ export class EmployeesService {
         team: { select: { id: true, name: true } },
         location: { select: { id: true, name: true } },
         manager: { select: { id: true, employeeCode: true, user: { select: { firstName: true, lastName: true } } } },
+        shift: { select: { id: true, name: true, startTime: true, endTime: true } },
       },
       orderBy: { joinedDate: 'desc' },
     });
@@ -835,6 +857,10 @@ export class EmployeesService {
 
     if (dto.managerId !== undefined) {
       updateData.managerId = await this.resolveManagerId(adminContext.tenantId, dto.managerId, id);
+    }
+
+    if (dto.shiftId !== undefined) {
+      updateData.shiftId = await this.resolveShiftId(adminContext.tenantId, dto.shiftId);
     }
 
     const updated = await this.prisma.employee.update({ where: { id }, data: updateData });

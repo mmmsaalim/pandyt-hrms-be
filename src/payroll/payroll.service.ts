@@ -207,7 +207,11 @@ export class PayrollService {
           }
         }
 
-        if (payrollIntegration?.includeOvertime && row.overtimeHours > 0) {
+        if (
+          payrollIntegration?.includeOvertime &&
+          row.overtimeHours > 0 &&
+          this.shouldPayOvertime(attendanceSettings?.overtimeRules, attendanceSettings?.overtimeEnabled)
+        ) {
           const employee = employees.find((item) => item.id === row.employeeId);
           if (employee) {
             const hourlyRate = employee.salary / (22 * 8);
@@ -236,6 +240,7 @@ export class PayrollService {
         payrollRunId: id,
         basicPay: emp.salary,
         allowances: overtimeAllowance,
+        attendanceDeduction,
         grossPay,
         epfEmployee: statutory.epfEmployee,
         epfEmployer: statutory.epfEmployer,
@@ -275,5 +280,18 @@ export class PayrollService {
     const tenantId = this.requireTenant(user);
     await this.assertOwnership(id, tenantId);
     return this.prisma.payrollRun.delete({ where: { id } });
+  }
+
+  private shouldPayOvertime(overtimeRules: unknown, overtimeEnabled?: boolean | null): boolean {
+    if (!overtimeEnabled) {
+      return false;
+    }
+
+    if (!overtimeRules || typeof overtimeRules !== 'object') {
+      return true;
+    }
+
+    const compensationMode = (overtimeRules as { compensationMode?: string }).compensationMode ?? 'PAY';
+    return compensationMode === 'PAY';
   }
 }

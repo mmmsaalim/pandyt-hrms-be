@@ -121,12 +121,55 @@ export class AttendanceCalculationService {
     return Math.round(overtimeHours * multiplier * 100) / 100;
   }
 
+  resolveMissingAttendanceStatus(
+    missingClockInAction: string,
+    missingClockOutAction: string,
+    missingBothAction: string,
+    hasClockIn: boolean,
+    hasClockOut: boolean,
+  ): string | null {
+    if (hasClockIn && hasClockOut) {
+      return null;
+    }
+
+    if (!hasClockIn && !hasClockOut) {
+      return this.mapMissingAttendanceAction(missingBothAction);
+    }
+
+    if (!hasClockIn) {
+      return this.mapMissingAttendanceAction(missingClockInAction);
+    }
+
+    return this.mapMissingAttendanceAction(missingClockOutAction);
+  }
+
+  private mapMissingAttendanceAction(action: string): string {
+    switch (action) {
+      case 'ABSENT':
+        return 'ABSENT';
+      case 'REQUEST_CORRECTION':
+        return 'MISSING_CORRECTION';
+      case 'MANAGER_APPROVAL':
+        return 'MISSING_APPROVAL';
+      case 'AUTO_LEAVE_DEDUCTION':
+        return 'MISSING_LEAVE';
+      case 'FLAG':
+      default:
+        return 'INCOMPLETE';
+    }
+  }
+
   resolveAttendanceStatus(
     context: DayContext,
     lateMinutes: number,
     earlyMinutes: number,
     hasClockIn: boolean,
     hasClockOut: boolean,
+    missingActions?: {
+      missingClockInAction: string;
+      missingClockOutAction: string;
+      missingBothAction: string;
+    },
   ): string {
     if (context.hasApprovedLeave && !context.isHalfDayLeave) {
       return `ON_LEAVE:${context.leaveType ?? 'APPROVED'}`;
@@ -141,10 +184,24 @@ export class AttendanceCalculationService {
     }
 
     if (!hasClockIn && !hasClockOut) {
+      if (missingActions) {
+        return this.mapMissingAttendanceAction(missingActions.missingBothAction);
+      }
       return 'ABSENT';
     }
 
     if (!hasClockIn || !hasClockOut) {
+      if (missingActions) {
+        return (
+          this.resolveMissingAttendanceStatus(
+            missingActions.missingClockInAction,
+            missingActions.missingClockOutAction,
+            missingActions.missingBothAction,
+            hasClockIn,
+            hasClockOut,
+          ) ?? 'INCOMPLETE'
+        );
+      }
       return 'INCOMPLETE';
     }
 
