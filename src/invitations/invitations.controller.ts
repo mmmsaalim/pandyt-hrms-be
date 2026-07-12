@@ -5,6 +5,8 @@ import { AcceptInvitationDto } from './dto/accept-invitation.dto';
 import { ResendInvitationDto } from './dto/resend-invitation.dto';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
+import { RateLimitGuard } from '../common/guards/rate-limit.guard';
+import { RateLimit } from '../common/decorators/rate-limit.decorator';
 import { Roles } from '../common/decorators/roles.decorator';
 
 @Controller('invitations')
@@ -12,11 +14,15 @@ export class InvitationsController {
   constructor(private readonly invitationsService: InvitationsService) {}
 
   // Public endpoints — no auth required
+  @UseGuards(RateLimitGuard)
+  @RateLimit(20, 900)
   @Get('resolve')
   resolve(@Query() query: ResolveInvitationDto) {
     return this.invitationsService.resolveByToken(query.token);
   }
 
+  @UseGuards(RateLimitGuard)
+  @RateLimit(10, 900)
   @Post('accept')
   accept(@Body() dto: AcceptInvitationDto) {
     return this.invitationsService.acceptInvitation(dto.token, dto.password);

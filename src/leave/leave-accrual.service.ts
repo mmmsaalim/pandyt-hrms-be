@@ -38,7 +38,7 @@ export class LeaveAccrualService {
   /**
    * Accrue leave for all active employees in a tenant
    */
-  private async accrueForTenant(tenantId: number): Promise<number> {
+  async accrueForTenant(tenantId: number): Promise<number> {
     // Get all leave policies for tenant
     const policies = await this.prisma.leavePolicy.findMany({
       where: { tenantId },

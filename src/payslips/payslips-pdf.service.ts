@@ -41,6 +41,10 @@ export class PayslipsPdfService {
       basicPay: payslip.basicPay,
       allowances: payslip.allowances,
       attendanceDeduction: (payslip as { attendanceDeduction?: number }).attendanceDeduction ?? 0,
+      leaveDeduction: (payslip as { leaveDeduction?: number }).leaveDeduction ?? 0,
+      deductionBreakdown: Array.isArray(payslip.deductionBreakdown)
+        ? (payslip.deductionBreakdown as Array<{ type: string; amount: number; reason: string }>)
+        : [],
       grossPay: payslip.grossPay,
       epfEmployee: payslip.epfEmployee,
       payeTax: payslip.payeTax,
@@ -63,6 +67,8 @@ export class PayslipsPdfService {
     basicPay: number;
     allowances: number;
     attendanceDeduction: number;
+    leaveDeduction: number;
+    deductionBreakdown: Array<{ type: string; amount: number; reason: string }>;
     grossPay: number;
     epfEmployee: number;
     payeTax: number;
@@ -141,6 +147,19 @@ export class PayslipsPdfService {
       <td class="label">Attendance Deduction (late / early / absent)</td>
       <td>${data.attendanceDeduction.toFixed(2)}</td>
     </tr>
+    <tr>
+      <td class="label">Unpaid Leave Deduction</td>
+      <td>${data.leaveDeduction.toFixed(2)}</td>
+    </tr>
+    ${
+      data.deductionBreakdown.length
+        ? `<tr>
+      <td class="label" colspan="2" style="text-align:left;font-size:12px;color:#444;">
+        Reasons:<br/>${data.deductionBreakdown.map((row) => `• ${row.reason}`).join('<br/>')}
+      </td>
+    </tr>`
+        : ''
+    }
     <tr class="total-row">
       <td class="label">Total Deductions</td>
       <td>${data.deductions.toFixed(2)}</td>

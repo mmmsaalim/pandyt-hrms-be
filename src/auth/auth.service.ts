@@ -100,7 +100,9 @@ export class AuthService {
     }
 
     if (user.status !== 'ACTIVE') {
-      throw new UnauthorizedException('Account is pending activation. Please contact your super admin.');
+      throw new UnauthorizedException(
+        'Account is not yet activated. Please check your email for an invitation link, or contact your administrator.',
+      );
     }
 
     if (user.tenantId && user.tenant && user.tenant.status !== 'ACTIVE') {

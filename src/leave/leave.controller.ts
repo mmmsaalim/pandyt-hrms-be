@@ -72,6 +72,16 @@ export class LeaveController {
     return this.leaveService.runAccrual(req.user);
   }
 
+  @Get('calculate-days')
+  @Roles('COMPANY_ADMIN', 'EMPLOYEE', 'HR_MANAGER', 'TEAM_LEAD')
+  calculateDays(
+    @Query('startDate') startDate: string,
+    @Query('endDate') endDate: string,
+    @Req() req: { user?: { sub: number; roles?: string[] } },
+  ) {
+    return this.leaveService.calculateWorkingDays(startDate, endDate, req.user);
+  }
+
   @Post()
   @Roles('COMPANY_ADMIN', 'HR_MANAGER', 'TEAM_LEAD', 'EMPLOYEE')
   create(

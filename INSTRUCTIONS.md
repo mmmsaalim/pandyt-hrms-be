@@ -34,7 +34,7 @@ Main folders used in backend:
 - `src/letters` - HR letter generation (included on all plans; not a billable module toggle)
 - `src/feedback` - team feedback capture for HR review (included on all plans)
 - `src/common` - guards, decorators, tenant enforcement
-- `src/prisma` - Prisma service + tenant middleware
+- `src/prisma` - Prisma service + tenant `$extends` extension
 - `prisma/schema.prisma` - DB schema
 - `prisma/seed.ts` - idempotent seed
 
@@ -52,11 +52,33 @@ Main folders used in backend:
 ## 5) Security Baseline Status (Complete)
 Implemented and active:
 - Tenant-aware login via `companyCode` for non-super-admin users
-- HttpOnly cookie auth session
+- HttpOnly cookie auth session (`flowhr_access_token`, 8 hours)
 - `X-Tenant-ID` enforcement against JWT `tenantId`
-- Prisma tenant middleware guardrails
+- Prisma 6 tenant extension (`$extends`) + service-level tenant checks
 - Cross-tenant access rejection
-- One-time expiring invitation token flow
+- One-time expiring invitation token flow (default 24h)
+- Password reset tokens hashed (SHA-256), default 24h expiry
+- Rate limiting on login, signup, password reset, invitation public endpoints
+- JWT secret strength validation on server startup
+- Security response headers (X-Content-Type-Options, X-Frame-Options, Referrer-Policy)
+- Configurable CORS via `CORS_ORIGINS` env
+
+**Token timings**
+| Token | Default |
+|---|---|
+| JWT access | 8 hours (480 min) |
+| Password reset | 24 hours (`PASSWORD_RESET_EXPIRY_HOURS`) |
+| Invitation | 24 hours (`INVITATION_EXPIRY_HOURS`) |
+
+**Rate limits (per IP, 15 min window)**
+| Endpoint | Limit |
+|---|---|
+| `POST /api/auth/login` | 10 |
+| `POST /api/auth/signup` | 5 |
+| `POST /api/auth/password/reset/*` | 5 |
+| `GET/POST /api/invitations/resolve|accept` | 20 / 10 |
+
+See **Section 16** for Postman testing and full security instructions.
 
 Key auth/invite endpoints:
 - `POST /api/auth/login`
@@ -317,8 +339,9 @@ Planned next roadmap items:
 ## 8) Environment and Commands
 Required env:
 - `DATABASE_URL`
-- `JWT_SECRET`
+- `JWT_SECRET` (32+ chars; server warns in dev, fails in production if weak)
 - `APP_URL`
+- `CORS_ORIGINS` (comma-separated FE URLs)
 - `INVITATION_EXPIRY_HOURS`
 - `PASSWORD_RESET_EXPIRY_HOURS`
 - `EMAIL_PROVIDER` (`auto`, `smtp`, `resend`, `brevo`)
@@ -496,11 +519,59 @@ Departments without a location appear under `"Unassigned Location"` (id: 0).
 - Tree node includes `managerId` and `managerName` fields.
 
 ### 15.5 Attendance Settings — Late/Early Config
-- New `AttendanceSettings` model (`attendance_settings` table) per tenant.
-- Fields: `workStartTime`, `workEndTime`, `lateArrivalGraceMinutes`, `lateArrivalAction`, `earlyDepartureGraceMinutes`, `earlyDepartureAction`.
-- `GET /api/attendance/settings` — returns (or auto-creates) tenant attendance settings.
-- `PATCH /api/attendance/settings` — updates settings (COMPANY_ADMIN / HR_MANAGER only).
-- Actions: `FLAG` (default), `DEDUCT`, `WARN`.
+- `AttendanceSettings` model per tenant with full settings JSON (schedule, late, early, OT, payroll integration, shifts, holidays).
+- SaaS pay modes: salary-based or fixed LKR for late, early, and OT.
+- Configurable `workingDaysPerMonth` and `standardHoursPerDay` for payroll formulas.
+- Connected to payroll: `attendanceDeduction` + OT allowance on payslips.
+
+---
+
+## 16) Security Hardening (Multi-Tenant SaaS)
+
+Read this before API testing (Postman), production deploy, or security reviews.
+
+### 16.1 Architecture
+
+```
+Request → CORS + security headers → TenantContext (X-Tenant-ID)
+       → JwtAuthGuard → tenantId header match (JwtStrategy)
+       → RolesGuard / PermissionsGuard / ModuleEnabledGuard
+       → Prisma tenant extension ($extends) + service tenantId checks
+```
+
+**Files**
+- `src/prisma/prisma-tenant.extension.ts` — auto-injects `tenantId` on tenant models
+- `src/common/security/validate-security-config.ts` — JWT secret validation
+- `src/common/security/rate-limit.service.ts` + `RateLimitGuard`
+- `src/auth/jwt.strategy.ts` — cookie or Bearer token + tenant header match
+
+### 16.2 Postman / API Tool Testing
+
+1. `POST /api/auth/login` with `{ email, password, companyCode }`
+2. Copy `accessToken` and `user.tenantId` from response
+3. Every protected call:
+   - `Authorization: Bearer <accessToken>`
+   - `X-Tenant-ID: <tenantId>`
+4. Expected failures:
+   - Missing/invalid JWT → **401**
+   - Wrong `X-Tenant-ID` → **401 Tenant header mismatch**
+   - Wrong role → **403**
+   - Rate limit exceeded → **429**
+
+### 16.3 Production Checklist
+
+- [ ] Set strong `JWT_SECRET` (32+ random characters)
+- [ ] `NODE_ENV=production`
+- [ ] `CORS_ORIGINS` = production FE URL(s) only
+- [ ] `APP_URL` uses HTTPS
+- [ ] Never commit `.env`
+
+### 16.4 Rules for AI Agents
+
+1. All tenant business queries must scope by `tenantId` (extension + service check).
+2. Never bypass `JwtAuthGuard` on tenant data endpoints.
+3. `SUPER_ADMIN` bypasses tenant header check — protect cross-tenant routes with `@Roles('SUPER_ADMIN')` only.
+4. Public routes: auth login/signup/reset, invitation resolve/accept, public careers — rate limited.
 
 ---
 

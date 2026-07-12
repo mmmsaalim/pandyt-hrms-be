@@ -29,6 +29,8 @@ export const MISSING_ATTENDANCE_ACTIONS = [
 
 export type MissingAttendanceAction = (typeof MISSING_ATTENDANCE_ACTIONS)[number];
 
+export type DeductionPayMode = 'SALARY' | 'FIXED';
+
 export type OvertimeRuleConfig = {
   enabled: boolean;
   startAfterScheduledEnd: boolean;
@@ -39,6 +41,8 @@ export type OvertimeRuleConfig = {
   holidayMultiplier: number;
   compensationMode: 'PAY' | 'TIME_OFF' | 'NONE';
   requiresApproval: boolean;
+  payMode: DeductionPayMode;
+  fixedRateLkr: number;
 };
 
 export type PayrollIntegrationConfig = {
@@ -51,6 +55,12 @@ export type PayrollIntegrationConfig = {
   deductAbsences: boolean;
   includeOvertime: boolean;
   missingClockOutPolicy: 'USE_SCHEDULED_END' | 'FLAG' | 'ABSENT';
+  workingDaysPerMonth: number;
+  standardHoursPerDay: number;
+  lateDeductionMode: DeductionPayMode;
+  lateFixedAmountLkr: number;
+  earlyDeductionMode: DeductionPayMode;
+  earlyFixedAmountLkr: number;
 };
 
 export const DEFAULT_OVERTIME_RULES: OvertimeRuleConfig = {
@@ -63,6 +73,8 @@ export const DEFAULT_OVERTIME_RULES: OvertimeRuleConfig = {
   holidayMultiplier: 2.5,
   compensationMode: 'PAY',
   requiresApproval: false,
+  payMode: 'SALARY',
+  fixedRateLkr: 0,
 };
 
 export const DEFAULT_PAYROLL_INTEGRATION: PayrollIntegrationConfig = {
@@ -75,6 +87,12 @@ export const DEFAULT_PAYROLL_INTEGRATION: PayrollIntegrationConfig = {
   deductAbsences: true,
   includeOvertime: false,
   missingClockOutPolicy: 'USE_SCHEDULED_END',
+  workingDaysPerMonth: 22,
+  standardHoursPerDay: 8,
+  lateDeductionMode: 'SALARY',
+  lateFixedAmountLkr: 0,
+  earlyDeductionMode: 'SALARY',
+  earlyFixedAmountLkr: 0,
 };
 
 export const LEAVE_ATTENDANCE_EXEMPT_TYPES = [
@@ -83,8 +101,22 @@ export const LEAVE_ATTENDANCE_EXEMPT_TYPES = [
   'sick',
   'medical',
   'maternity',
-  'paternity',
   'work_from_home',
   'business_travel',
   'half_day',
+] as const;
+
+/** Policies used when missing attendance auto-deducts leave (Casual first, then Annual). */
+export const AUTO_LEAVE_DEDUCTION_POLICY_ORDER = ['casual', 'annual'] as const;
+
+export type WeekdayKind = 'OFF' | 'HALF' | 'FULL';
+
+export const WEEKDAY_LABELS = [
+  'Sunday',
+  'Monday',
+  'Tuesday',
+  'Wednesday',
+  'Thursday',
+  'Friday',
+  'Saturday',
 ] as const;

@@ -8,7 +8,7 @@ import {
 import { Prisma } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 import { randomBytes } from 'crypto';
-import { PrismaService } from '../prisma/prisma.service';
+import { PrismaService, PrismaTxClient } from '../prisma/prisma.service';
 import { CreateEmployeeDto } from './dto/create-employee.dto';
 import { UpdateEmployeeDto } from './dto/update-employee.dto';
 import { InviteEmployeeDto } from './dto/invite-employee.dto';
@@ -18,7 +18,7 @@ import { EmailService } from '../email/email.service';
 import { OffboardEmployeeDto } from './dto/offboard-employee.dto';
 
 type RequestUser = { sub: number; roles?: string[] } | undefined;
-type TxClient = Prisma.TransactionClient;
+type TxClient = PrismaTxClient;
 
 @Injectable()
 export class EmployeesService {
@@ -42,6 +42,7 @@ export class EmployeesService {
       ...employee,
       isManualOnly,
       loginEnabled: !isManualOnly && employee.user?.status === 'ACTIVE',
+      invitationPending: !isManualOnly && employee.user?.status === 'PENDING',
       customFields: this.tenantConfigurationService.filterCustomFieldsForRead(
         runtimeConfig,
         'employees',
@@ -616,7 +617,7 @@ export class EmployeesService {
           passwordHash: temporaryPasswordHash,
           firstName: firstName || 'Employee',
           lastName,
-          status: onboardingMode === 'MANUAL_ONLY' ? 'INACTIVE' : 'ACTIVE',
+          status: onboardingMode === 'MANUAL_ONLY' ? 'INACTIVE' : 'PENDING',
           tenantId: adminContext.tenantId,
         },
       });
@@ -750,7 +751,7 @@ export class EmployeesService {
       where: { id: targetEmployee.userId },
       data: {
         email: normalizedEmail,
-        status: 'ACTIVE',
+        status: 'PENDING',
       },
     });
 

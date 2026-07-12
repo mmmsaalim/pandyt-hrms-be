@@ -1,6 +1,7 @@
 import { IsEmail, IsEnum, IsString, MinLength } from 'class-validator';
 
 export enum UserStatusEnum {
+  PENDING = 'PENDING',
   ACTIVE = 'ACTIVE',
   INACTIVE = 'INACTIVE',
 }

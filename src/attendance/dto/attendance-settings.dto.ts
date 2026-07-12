@@ -54,6 +54,15 @@ export class UpdateAttendanceSettingsDto {
   weekendDays?: number[];
 
   @IsOptional()
+  @IsArray()
+  @IsInt({ each: true })
+  halfWorkingDays?: number[];
+
+  @IsOptional()
+  @IsString()
+  halfDayEndTime?: string;
+
+  @IsOptional()
   @IsBoolean()
   overtimeEnabled?: boolean;
 
@@ -140,4 +149,8 @@ export class UpsertCompanyHolidayDto {
   @IsOptional()
   @IsBoolean()
   isPaid?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  isHalfDay?: boolean;
 }

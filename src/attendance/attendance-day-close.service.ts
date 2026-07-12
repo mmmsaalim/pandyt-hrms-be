@@ -3,11 +3,13 @@ import { Cron } from '@nestjs/schedule';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { AttendanceCalculationService } from './attendance-calculation.service';
+import { AUTO_LEAVE_DEDUCTION_POLICY_ORDER } from './attendance.constants';
 
 type ScheduleWindow = {
   workStartTime: string;
   workEndTime: string;
   breakMinutes: number;
+  isNightShift?: boolean;
 };
 
 @Injectable()
@@ -63,6 +65,8 @@ export class AttendanceDayCloseService {
             endTime: true,
             breakMinutes: true,
             overtimeEligible: true,
+            isNightShift: true,
+            flexibleGraceMinutes: true,
           },
         },
       },
@@ -70,11 +74,19 @@ export class AttendanceDayCloseService {
 
     for (const employee of employees) {
       const dayContext = await this.getDayContext(tenantId, employee.id, date, resolvedSettings);
+
+      // Respect payroll ignore flags + calendar OFF / full holiday / full-day leave.
+      if (dayContext.isWeekend && payrollIntegration.ignoreWeekends) {
+        continue;
+      }
+      if (dayContext.isHoliday && payrollIntegration.ignoreCompanyHolidays) {
+        continue;
+      }
       if (dayContext.isWeekend || dayContext.isHoliday || (dayContext.hasApprovedLeave && !dayContext.isHalfDayLeave)) {
         continue;
       }
 
-      const schedule = await this.resolveSchedule(tenantId, resolvedSettings, employee.shift);
+      const schedule = await this.resolveSchedule(tenantId, resolvedSettings, employee.shift, date);
       const existing = await this.prisma.attendance.findUnique({
         where: {
           employeeId_date: {
@@ -98,6 +110,11 @@ export class AttendanceDayCloseService {
           },
         );
 
+        let notes: string | null = null;
+        if (this.isAutoLeaveDeductionStatus(status, resolvedSettings)) {
+          notes = await this.deductAutoLeaveForMissingAttendance(tenantId, employee.id, date);
+        }
+
         await this.prisma.attendance.create({
           data: {
             employeeId: employee.id,
@@ -109,6 +126,7 @@ export class AttendanceDayCloseService {
             hours: 0,
             overtimeHours: 0,
             payrollAdjustment: 0,
+            notes,
           },
         });
         continue;
@@ -119,7 +137,11 @@ export class AttendanceDayCloseService {
         let clockOut = new Date();
 
         if (payrollIntegration.missingClockOutPolicy === 'USE_SCHEDULED_END') {
-          clockOut = this.calculation.parseTimeOnDate(schedule.workEndTime, date);
+          clockOut = this.calculation.resolveScheduledEnd(
+            schedule,
+            date,
+            employee.shift?.isNightShift ?? false,
+          );
         } else if (payrollIntegration.missingClockOutPolicy === 'ABSENT') {
           await this.prisma.attendance.update({
             where: { id: existing.id },
@@ -143,6 +165,7 @@ export class AttendanceDayCloseService {
           clockIn,
           clockOut,
           existing.lateMinutes,
+          employee.shift?.isNightShift ?? false,
         );
 
         await this.prisma.attendance.update({
@@ -157,6 +180,79 @@ export class AttendanceDayCloseService {
     }
   }
 
+  private isAutoLeaveDeductionStatus(
+    status: string,
+    settings: Prisma.AttendanceSettingsGetPayload<object>,
+  ): boolean {
+    return (
+      status === 'MISSING_LEAVE' ||
+      settings.missingBothAction === 'AUTO_LEAVE_DEDUCTION' ||
+      settings.missingClockInAction === 'AUTO_LEAVE_DEDUCTION'
+    );
+  }
+
+  /**
+   * Deduct 1 working day from Casual first, then Annual. Returns employee-facing note.
+   */
+  private async deductAutoLeaveForMissingAttendance(
+    tenantId: number,
+    employeeId: number,
+    date: Date,
+  ): Promise<string> {
+    const policies = await this.prisma.leavePolicy.findMany({
+      where: { tenantId },
+    });
+
+    for (const code of AUTO_LEAVE_DEDUCTION_POLICY_ORDER) {
+      const policy = policies.find(
+        (row) =>
+          row.code?.toLowerCase() === code ||
+          row.name.toLowerCase().includes(code),
+      );
+      if (!policy) {
+        continue;
+      }
+
+      const balance = await this.prisma.leaveBalance.findUnique({
+        where: {
+          employeeId_leavePolicyId: {
+            employeeId,
+            leavePolicyId: policy.id,
+          },
+        },
+      });
+
+      const available = balance ? balance.allocated - balance.used : 0;
+      if (available < 1) {
+        continue;
+      }
+
+      if (balance) {
+        await this.prisma.leaveBalance.update({
+          where: { id: balance.id },
+          data: { used: { increment: 1 } },
+        });
+      } else {
+        await this.prisma.leaveBalance.create({
+          data: {
+            tenantId,
+            employeeId,
+            leavePolicyId: policy.id,
+            allocated: policy.days,
+            used: 1,
+            accrued: 0,
+          },
+        });
+      }
+
+      const dateLabel = this.calculation.toDateKey(date);
+      return `Missing attendance on ${dateLabel}: 1 day deducted from ${policy.name} leave balance. Please clock in/out daily to avoid leave deductions.`;
+    }
+
+    const dateLabel = this.calculation.toDateKey(date);
+    return `Missing attendance on ${dateLabel}: marked for leave deduction, but no Casual/Annual balance was available.`;
+  }
+
   private buildMetrics(
     settings: Prisma.AttendanceSettingsGetPayload<object>,
     schedule: ScheduleWindow,
@@ -169,16 +265,20 @@ export class AttendanceDayCloseService {
     clockIn: Date,
     clockOut: Date,
     existingLateMinutes: number,
+    isNightShift: boolean,
   ) {
     const lateMinutes =
       existingLateMinutes > 0
         ? existingLateMinutes
         : this.calculation.computeLateMinutes(clockIn, schedule, settings.lateArrivalGraceMinutes);
-    const earlyMinutes = this.calculation.computeEarlyDepartureMinutes(
-      clockOut,
-      schedule,
-      settings.earlyDepartureGraceMinutes,
+    const scheduledEnd = this.calculation.resolveScheduledEnd(schedule, clockIn, isNightShift);
+    const earlyGraceStart = new Date(
+      scheduledEnd.getTime() - settings.earlyDepartureGraceMinutes * 60_000,
     );
+    const earlyMinutes =
+      clockOut.getTime() >= earlyGraceStart.getTime()
+        ? 0
+        : Math.round((earlyGraceStart.getTime() - clockOut.getTime()) / 60_000);
     const hours = this.calculation.computeWorkedHours(clockIn, clockOut, schedule.breakMinutes);
     const overtimeRules = this.calculation.resolveOvertimeRules(settings.overtimeRules);
     const overtimeHours =
@@ -187,12 +287,11 @@ export class AttendanceDayCloseService {
         : 0;
     const payrollIntegration = this.calculation.resolvePayrollIntegration(settings.payrollIntegration);
     const scheduledStart = this.calculation.parseTimeOnDate(schedule.workStartTime, clockIn);
-    const scheduledEnd = this.calculation.parseTimeOnDate(schedule.workEndTime, clockOut);
     const scheduledHours = Math.max(
       0,
       (scheduledEnd.getTime() - scheduledStart.getTime()) / (1000 * 60 * 60) - schedule.breakMinutes / 60,
     );
-    const dailySalary = salary / 22;
+    const dailySalary = this.calculation.resolveDailySalary(salary, payrollIntegration);
     const payrollAdjustment = this.calculation.estimatePayrollAdjustment(
       dailySalary,
       scheduledHours,
@@ -201,6 +300,7 @@ export class AttendanceDayCloseService {
       settings.lateArrivalAction,
       settings.earlyDepartureAction,
       payrollIntegration,
+      salary,
     );
     const status = this.calculation.resolveAttendanceStatus(
       dayContext as Parameters<AttendanceCalculationService['resolveAttendanceStatus']>[0],
@@ -227,49 +327,72 @@ export class AttendanceDayCloseService {
 
   private async resolveSchedule(
     tenantId: number,
-    settings: { workStartTime: string; workEndTime: string },
-    shift?: { startTime: string; endTime: string; breakMinutes: number } | null,
+    settings: {
+      workStartTime: string;
+      workEndTime: string;
+      halfDayEndTime?: string;
+      halfWorkingDays?: unknown;
+    },
+    shift?: {
+      startTime: string;
+      endTime: string;
+      breakMinutes: number;
+      isNightShift?: boolean;
+    } | null,
+    date?: Date,
   ): Promise<ScheduleWindow> {
-    if (shift) {
-      return {
-        workStartTime: shift.startTime,
-        workEndTime: shift.endTime,
-        breakMinutes: shift.breakMinutes,
-      };
-    }
-
-    const defaultShift = await this.prisma.workShift.findFirst({
-      where: { tenantId, isDefault: true, isActive: true },
-    });
-    if (defaultShift) {
-      return {
-        workStartTime: defaultShift.startTime,
-        workEndTime: defaultShift.endTime,
-        breakMinutes: defaultShift.breakMinutes,
-      };
-    }
-
-    return {
+    let schedule: ScheduleWindow = {
       workStartTime: settings.workStartTime,
       workEndTime: settings.workEndTime,
       breakMinutes: 0,
+      isNightShift: false,
     };
+
+    if (shift) {
+      schedule = {
+        workStartTime: shift.startTime,
+        workEndTime: shift.endTime,
+        breakMinutes: shift.breakMinutes,
+        isNightShift: shift.isNightShift ?? false,
+      };
+    } else {
+      const defaultShift = await this.prisma.workShift.findFirst({
+        where: { tenantId, isDefault: true, isActive: true },
+      });
+      if (defaultShift) {
+        schedule = {
+          workStartTime: defaultShift.startTime,
+          workEndTime: defaultShift.endTime,
+          breakMinutes: defaultShift.breakMinutes,
+          isNightShift: defaultShift.isNightShift,
+        };
+      }
+    }
+
+    if (date) {
+      const halfWorkingDays = this.calculation.parseWeekdayList(settings.halfWorkingDays, []);
+      if (halfWorkingDays.includes(date.getDay()) && settings.halfDayEndTime) {
+        schedule = { ...schedule, workEndTime: settings.halfDayEndTime };
+      }
+    }
+
+    return schedule;
   }
 
   private async getDayContext(
     tenantId: number,
     employeeId: number,
     date: Date,
-    settings: { weekendDays: unknown },
+    settings: { weekendDays: unknown; halfWorkingDays?: unknown },
   ) {
     const dayStart = new Date(date);
     dayStart.setHours(0, 0, 0, 0);
     const dayEnd = new Date(dayStart);
     dayEnd.setDate(dayEnd.getDate() + 1);
 
-    const weekendDays = Array.isArray(settings.weekendDays)
-      ? (settings.weekendDays as number[])
-      : [6, 0];
+    const weekendDays = this.calculation.parseWeekdayList(settings.weekendDays, [6, 0]);
+    const halfWorkingDays = this.calculation.parseWeekdayList(settings.halfWorkingDays, []);
+    const weekdayKind = this.calculation.resolveWeekdayKind(dayStart, weekendDays, halfWorkingDays);
 
     const [holiday, approvedLeave] = await Promise.all([
       this.prisma.companyHoliday.findFirst({
@@ -288,11 +411,12 @@ export class AttendanceDayCloseService {
 
     const leaveType = approvedLeave?.type?.toLowerCase();
     const isHalfDayLeave = approvedLeave ? approvedLeave.days <= 0.5 : false;
+    const isFullHoliday = !!holiday && !holiday.isHalfDay;
 
     return {
       date: dayStart,
-      isWeekend: this.calculation.isWeekendDay(dayStart, weekendDays),
-      isHoliday: !!holiday,
+      isWeekend: weekdayKind === 'OFF',
+      isHoliday: isFullHoliday,
       hasApprovedLeave: !!approvedLeave,
       leaveType,
       isHalfDayLeave,

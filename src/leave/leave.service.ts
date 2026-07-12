@@ -8,6 +8,8 @@ import {
   SRI_LANKA_LEAVE_POLICIES,
   SRI_LANKA_LEAVE_PRESET_KEY,
 } from './leave.constants';
+import { AttendanceCalculationService } from '../attendance/attendance-calculation.service';
+import { LeaveAccrualService } from './leave-accrual.service';
 
 export type { LeaveSetupConfig } from './leave.constants';
 
@@ -15,7 +17,11 @@ type RequestUser = { sub: number; roles?: string[]; effectivePermissions?: strin
 
 @Injectable()
 export class LeaveService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly attendanceCalculation: AttendanceCalculationService,
+    private readonly leaveAccrual: LeaveAccrualService,
+  ) {}
 
   private hasRole(user: RequestUser, role: string): boolean {
     return (user?.roles ?? []).includes(role);
@@ -46,12 +52,11 @@ export class LeaveService {
     return date;
   }
 
-  private validateLeaveDates(
+  private validateLeaveDateBounds(
     startDate: string,
     endDate: string,
-    days: number,
     options: { allowPastDates: boolean },
-  ): number {
+  ): { start: Date; end: Date } {
     const start = this.parseLeaveDateOnly(startDate);
     const end = this.parseLeaveDateOnly(endDate);
     start.setHours(0, 0, 0, 0);
@@ -65,14 +70,64 @@ export class LeaveService {
       throw new BadRequestException('Leave can only be requested from tomorrow onwards.');
     }
 
-    const calculatedDays = Math.floor((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24)) + 1;
-    if (days !== calculatedDays) {
-      throw new BadRequestException(
-        `Leave days (${days}) must match the selected date range (${calculatedDays} day(s)).`,
-      );
+    return { start, end };
+  }
+
+  private async loadTenantCalendar(tenantId: number) {
+    const [settings, holidays] = await Promise.all([
+      this.prisma.attendanceSettings.findUnique({ where: { tenantId } }),
+      this.prisma.companyHoliday.findMany({
+        where: { tenantId },
+        select: { date: true, isHalfDay: true },
+      }),
+    ]);
+
+    return {
+      weekendDays: this.attendanceCalculation.parseWeekdayList(settings?.weekendDays, [6, 0]),
+      halfWorkingDays: this.attendanceCalculation.parseWeekdayList(settings?.halfWorkingDays, []),
+      holidays,
+    };
+  }
+
+  private async countWorkingLeaveDays(tenantId: number, startDate: Date, endDate: Date): Promise<number> {
+    const calendar = await this.loadTenantCalendar(tenantId);
+    return this.attendanceCalculation.countLeaveWorkingDays({
+      startDate,
+      endDate,
+      weekendDays: calendar.weekendDays,
+      halfWorkingDays: calendar.halfWorkingDays,
+      holidays: calendar.holidays,
+    });
+  }
+
+  async calculateWorkingDays(
+    startDate: string,
+    endDate: string,
+    user: RequestUser,
+  ): Promise<{ days: number; weekendDays: number[]; halfWorkingDays: number[] }> {
+    if (!user?.sub) {
+      throw new ForbiddenException('Unauthorized role access.');
+    }
+    const context = await this.getEmployeeContext(user.sub);
+    if (!context) {
+      throw new ForbiddenException('Employee profile not found for this user.');
     }
 
-    return calculatedDays;
+    const { start, end } = this.validateLeaveDateBounds(startDate, endDate, { allowPastDates: true });
+    const calendar = await this.loadTenantCalendar(context.tenantId);
+    const days = this.attendanceCalculation.countLeaveWorkingDays({
+      startDate: start,
+      endDate: end,
+      weekendDays: calendar.weekendDays,
+      halfWorkingDays: calendar.halfWorkingDays,
+      holidays: calendar.holidays,
+    });
+
+    return {
+      days,
+      weekendDays: calendar.weekendDays,
+      halfWorkingDays: calendar.halfWorkingDays,
+    };
   }
 
   private canBackdateLeave(user: RequestUser, status?: string): boolean {
@@ -201,36 +256,66 @@ export class LeaveService {
       });
     }
 
-    const balances = await this.getBalances(employeeId, user);
-    const balance = balances.find((b) => b.leavePolicyId === policy!.id);
+    const allowPastDates = this.canBackdateLeave(user, dto.status);
+    const { start, end } = this.validateLeaveDateBounds(dto.startDate, dto.endDate, { allowPastDates });
+    const calculatedDays = await this.countWorkingLeaveDays(employee.tenantId, start, end);
 
-    if (balance) {
-      const available = balance.allocated - balance.used;
-      if (available < dto.days) {
-        throw new ForbiddenException(`Insufficient leave balance. Requested ${dto.days} but only ${available} available.`);
-      }
+    if (calculatedDays <= 0) {
+      throw new BadRequestException(
+        'Selected dates have no working days (weekends / full holidays only). Adjust the range or company calendar in Attendance settings.',
+      );
     }
 
-    const allowPastDates = this.canBackdateLeave(user, dto.status);
-    this.validateLeaveDates(dto.startDate, dto.endDate, dto.days, { allowPastDates });
+    if (Math.abs(Number(dto.days) - calculatedDays) > 0.001) {
+      throw new BadRequestException(
+        `Leave days (${dto.days}) must match working days in range (${calculatedDays} day(s)), excluding weekends/full holidays and counting half-days as 0.5.`,
+      );
+    }
+
+    const balances = await this.getBalances(employeeId, user);
+    const balance = balances.find((b) => b.leavePolicyId === policy!.id);
+    const available = balance ? Math.max(0, balance.allocated - balance.used) : 0;
+    const paidDays = Math.min(calculatedDays, available);
+    const unpaidDays = this.attendanceCalculation.roundDays(Math.max(0, calculatedDays - paidDays));
 
     let approvedById: number | null = null;
     if (dto.status === 'APPROVED' || dto.status === 'REJECTED') {
       approvedById = requesterContext.id;
     }
 
-    return this.prisma.leaveRequest.create({
+    const created = await this.prisma.leaveRequest.create({
       data: {
         employeeId,
         type: dto.type,
-        startDate: new Date(dto.startDate),
-        endDate: new Date(dto.endDate),
-        days: dto.days,
+        startDate: start,
+        endDate: end,
+        days: calculatedDays,
+        paidDays,
+        unpaidDays,
         reason: dto.reason,
         status: dto.status ?? 'PENDING',
         approvedById,
       },
     });
+
+    if (created.status === 'APPROVED' && paidDays > 0) {
+      const leaveBalance = await this.prisma.leaveBalance.findUnique({
+        where: {
+          employeeId_leavePolicyId: {
+            employeeId,
+            leavePolicyId: policy.id,
+          },
+        },
+      });
+      if (leaveBalance) {
+        await this.prisma.leaveBalance.update({
+          where: { id: leaveBalance.id },
+          data: { used: { increment: paidDays } },
+        });
+      }
+    }
+
+    return created;
   }
 
   async update(id: number, dto: UpdateLeaveRequestDto, user: RequestUser) {
@@ -278,6 +363,11 @@ export class LeaveService {
       }
     }
 
+    const paidDays =
+      leaveRequest.paidDays > 0 || leaveRequest.unpaidDays > 0
+        ? leaveRequest.paidDays
+        : leaveRequest.days;
+
     return this.prisma.$transaction(async (tx) => {
       const updateData: {
         status?: typeof newStatus;
@@ -313,7 +403,7 @@ export class LeaveService {
         },
       });
 
-      if (originalStatus !== 'APPROVED' && newStatus === 'APPROVED') {
+      if (originalStatus !== 'APPROVED' && newStatus === 'APPROVED' && paidDays > 0) {
         const policy = await tx.leavePolicy.findFirst({
           where: { tenantId: leaveRequest.employee.tenantId, name: { equals: leaveRequest.type, mode: 'insensitive' } },
         });
@@ -331,11 +421,11 @@ export class LeaveService {
           if (balance) {
             await tx.leaveBalance.update({
               where: { id: balance.id },
-              data: { used: { increment: leaveRequest.days } },
+              data: { used: { increment: paidDays } },
             });
           }
         }
-      } else if (originalStatus === 'APPROVED' && newStatus !== 'APPROVED') {
+      } else if (originalStatus === 'APPROVED' && newStatus !== 'APPROVED' && paidDays > 0) {
         const policy = await tx.leavePolicy.findFirst({
           where: { tenantId: leaveRequest.employee.tenantId, name: { equals: leaveRequest.type, mode: 'insensitive' } },
         });
@@ -353,7 +443,7 @@ export class LeaveService {
           if (balance) {
             await tx.leaveBalance.update({
               where: { id: balance.id },
-              data: { used: { decrement: leaveRequest.days } },
+              data: { used: { decrement: paidDays } },
             });
           }
         }
@@ -555,55 +645,16 @@ export class LeaveService {
     });
   }
 
-  // --- Accrual Engine ---
+  /** Manual accrual uses the same capped engine as the monthly cron (no double logic). */
   async runAccrual(user: RequestUser) {
     const context = await this.getEmployeeContext(user!.sub);
     if (!context) throw new ForbiddenException('Employee profile not found.');
 
-    const employees = await this.prisma.employee.findMany({
-      where: { tenantId: context.tenantId, deletedAt: null },
-    });
-
-    const policies = await this.prisma.leavePolicy.findMany({
-      where: { tenantId: context.tenantId },
-    });
-
-    for (const emp of employees) {
-      for (const policy of policies) {
-        const balance = await this.prisma.leaveBalance.findUnique({
-          where: {
-            employeeId_leavePolicyId: {
-              employeeId: emp.id,
-              leavePolicyId: policy.id,
-            },
-          },
-        });
-
-        const accrualAmount = policy.accrualRate || (policy.days / 12);
-
-        if (balance) {
-          await this.prisma.leaveBalance.update({
-            where: { id: balance.id },
-            data: {
-              accrued: { increment: accrualAmount },
-              allocated: { increment: accrualAmount },
-            },
-          });
-        } else {
-          await this.prisma.leaveBalance.create({
-            data: {
-              tenantId: context.tenantId,
-              employeeId: emp.id,
-              leavePolicyId: policy.id,
-              allocated: policy.days + accrualAmount,
-              used: 0,
-              accrued: accrualAmount,
-            },
-          });
-        }
-      }
-    }
-
-    return { success: true, processedEmployeesCount: employees.length };
+    const result = await this.leaveAccrual.accrueManual(context.tenantId);
+    return {
+      success: true,
+      message: result.message,
+      processedBalancesCount: result.updated,
+    };
   }
 }

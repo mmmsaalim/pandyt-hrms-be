@@ -342,6 +342,10 @@ model AttendanceSettings {
   earlyDepartureGraceMinutes   Int      @default(0)
   earlyDepartureAction         String   @default("FLAG")
   weekendDays                  Json     @default("[6,0]")
+  /// Weekday numbers (0=Sun..6=Sat) that are half working days (e.g. Saturday half-day). Must not overlap weekendDays.
+  halfWorkingDays              Json     @default("[]")
+  /// Scheduled end time used on half working days (e.g. 13:00).
+  halfDayEndTime               String   @default("13:00")
   overtimeEnabled              Boolean  @default(false)
   overtimeRules                Json     @default("{}")
   missingClockInAction         String   @default("FLAG")
@@ -386,6 +390,8 @@ model CompanyHoliday {
   date        DateTime
   isRecurring Boolean  @default(false)
   isPaid      Boolean  @default(true)
+  /// When true, employees still work a half day (counts 0.5 toward leave if leave is taken).
+  isHalfDay   Boolean  @default(false)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
   tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
@@ -440,6 +446,10 @@ model LeaveRequest {
   startDate        DateTime
   endDate          DateTime
   days             Float
+  /// Portion of `days` covered by leave balance (salary not deducted).
+  paidDays         Float       @default(0)
+  /// Portion beyond entitlement — deducted from salary on payroll with reason.
+  unpaidDays       Float       @default(0)
   reason           String
   status           LeaveStatus @default(PENDING)
   approvalComment  String?
@@ -488,6 +498,9 @@ model Payslip {
   basicPay     Float         @default(0)
   allowances   Float         @default(0)
   attendanceDeduction Float  @default(0)
+  leaveDeduction      Float  @default(0)
+  /// Line-item reasons for deductions shown on payslip UI/PDF.
+  deductionBreakdown  Json   @default("[]")
   grossPay     Float
   epfEmployee  Float         @default(0)
   epfEmployer  Float         @default(0)

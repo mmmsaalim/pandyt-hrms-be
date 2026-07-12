@@ -1,93 +1,48 @@
-import { INestApplication, Injectable, OnModuleInit } from '@nestjs/common';
+import { INestApplication, Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { PrismaClient } from '@prisma/client';
-import { TenantContext } from '../common/tenant-context';
+import { prismaTenantExtension } from './prisma-tenant.extension';
+
+function createExtendedPrismaClient() {
+  const prisma = new PrismaClient();
+  return prisma.$extends(prismaTenantExtension);
+}
+
+type ExtendedPrismaClient = ReturnType<typeof createExtendedPrismaClient>;
+
+export type PrismaTxClient = Omit<
+  ExtendedPrismaClient,
+  '$connect' | '$disconnect' | '$on' | '$transaction' | '$extends'
+>;
+
+const PrismaClientExtended = class {
+  constructor() {
+    return createExtendedPrismaClient() as unknown as ExtendedPrismaClient;
+  }
+} as new () => ExtendedPrismaClient;
 
 @Injectable()
-export class PrismaService extends PrismaClient implements OnModuleInit {
+export class PrismaService extends PrismaClientExtended implements OnModuleInit {
+  private readonly logger = new Logger(PrismaService.name);
+
+  constructor() {
+    super();
+    this.logger.log('Prisma tenant extension active (Prisma 6 $extends).');
+  }
+
   async onModuleInit() {
     if (!process.env.DATABASE_URL) {
-      console.warn(
-        'DATABASE_URL is not set. Prisma connection skipped (DB-later mode).',
-      );
+      console.warn('DATABASE_URL is not set. Prisma connection skipped (DB-later mode).');
       return;
     }
 
     await this.$connect();
-
-    const tenantModels = new Set([
-      'User',
-      'Role',
-      'Employee',
-      'Invitation',
-      'PayrollRun',
-      'Candidate',
-      'Location',
-      'Department',
-      'Team',
-      'LeavePolicy',
-      'LeaveBalance',
-    ]);
-
-    const middlewareClient = this as unknown as {
-      $use?: (fn: (params: any, next: (params: any) => Promise<any>) => Promise<any>) => void;
-    };
-
-    if (typeof middlewareClient.$use !== 'function') {
-      console.warn(
-        'Prisma $use middleware is unavailable in this runtime. Falling back to service-level tenant checks.',
-      );
-      return;
-    }
-
-    middlewareClient.$use(async (params, next) => {
-      const tenantId = TenantContext.getTenantId();
-      const model = params.model ?? '';
-
-      if (!tenantId || !tenantModels.has(model)) {
-        return next(params);
-      }
-
-      const action = params.action;
-
-      if (action === 'findMany' || action === 'findFirst' || action === 'count') {
-        params.args = params.args ?? {};
-        params.args.where = {
-          ...(params.args.where ?? {}),
-          tenantId,
-        };
-      }
-
-      if (action === 'create' && params.args?.data) {
-        params.args.data = {
-          ...params.args.data,
-          tenantId,
-        };
-      }
-
-      if (action === 'createMany' && Array.isArray(params.args?.data)) {
-        params.args.data = params.args.data.map((row: Record<string, unknown>) => ({
-          ...row,
-          tenantId,
-        }));
-      }
-
-      if (action === 'updateMany' || action === 'deleteMany') {
-        params.args = params.args ?? {};
-        params.args.where = {
-          ...(params.args.where ?? {}),
-          tenantId,
-        };
-      }
-
-      return next(params);
-    });
   }
 
   async enableShutdownHooks(app: INestApplication) {
     (this as unknown as { $on: (event: string, cb: () => Promise<void>) => void }).$on(
       'beforeExit',
       async () => {
-      await app.close();
+        await app.close();
       },
     );
   }

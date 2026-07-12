@@ -41,6 +41,8 @@ export class AttendanceService {
             endTime: true,
             breakMinutes: true,
             overtimeEligible: true,
+            isNightShift: true,
+            flexibleGraceMinutes: true,
           },
         },
       },
@@ -64,49 +66,71 @@ export class AttendanceService {
 
   private async resolveSchedule(
     tenantId: number,
-    settings: { workStartTime: string; workEndTime: string },
-    shift?: { startTime: string; endTime: string; breakMinutes: number } | null,
+    settings: { workStartTime: string; workEndTime: string; halfDayEndTime?: string; halfWorkingDays?: unknown },
+    shift?: {
+      startTime: string;
+      endTime: string;
+      breakMinutes: number;
+      isNightShift?: boolean;
+      flexibleGraceMinutes?: number;
+    } | null,
+    date?: Date,
   ) {
-    if (shift) {
-      return {
-        workStartTime: shift.startTime,
-        workEndTime: shift.endTime,
-        breakMinutes: shift.breakMinutes,
-      };
-    }
-
-    const defaultShift = await this.prisma.workShift.findFirst({
-      where: { tenantId, isDefault: true, isActive: true },
-    });
-    if (defaultShift) {
-      return {
-        workStartTime: defaultShift.startTime,
-        workEndTime: defaultShift.endTime,
-        breakMinutes: defaultShift.breakMinutes,
-      };
-    }
-
-    return {
+    let schedule = {
       workStartTime: settings.workStartTime,
       workEndTime: settings.workEndTime,
       breakMinutes: 0,
+      isNightShift: false,
+      flexibleGraceMinutes: 0,
     };
+
+    if (shift) {
+      schedule = {
+        workStartTime: shift.startTime,
+        workEndTime: shift.endTime,
+        breakMinutes: shift.breakMinutes,
+        isNightShift: shift.isNightShift ?? false,
+        flexibleGraceMinutes: shift.flexibleGraceMinutes ?? 0,
+      };
+    } else {
+      const defaultShift = await this.prisma.workShift.findFirst({
+        where: { tenantId, isDefault: true, isActive: true },
+      });
+      if (defaultShift) {
+        schedule = {
+          workStartTime: defaultShift.startTime,
+          workEndTime: defaultShift.endTime,
+          breakMinutes: defaultShift.breakMinutes,
+          isNightShift: defaultShift.isNightShift,
+          flexibleGraceMinutes: defaultShift.flexibleGraceMinutes,
+        };
+      }
+    }
+
+    if (date) {
+      const halfWorkingDays = this.calculation.parseWeekdayList(settings.halfWorkingDays, []);
+      if (halfWorkingDays.includes(date.getDay()) && settings.halfDayEndTime) {
+        schedule = { ...schedule, workEndTime: settings.halfDayEndTime };
+      }
+    }
+
+    return schedule;
   }
 
   private async getDayContext(
     tenantId: number,
     employeeId: number,
     date: Date,
-    settings: { weekendDays: unknown },
+    settings: { weekendDays: unknown; halfWorkingDays?: unknown },
   ) {
     const dayStart = new Date(date);
     dayStart.setHours(0, 0, 0, 0);
     const dayEnd = new Date(dayStart);
     dayEnd.setDate(dayEnd.getDate() + 1);
 
-    const weekendDays = Array.isArray(settings.weekendDays)
-      ? (settings.weekendDays as number[])
-      : [6, 0];
+    const weekendDays = this.calculation.parseWeekdayList(settings.weekendDays, [6, 0]);
+    const halfWorkingDays = this.calculation.parseWeekdayList(settings.halfWorkingDays, []);
+    const weekdayKind = this.calculation.resolveWeekdayKind(dayStart, weekendDays, halfWorkingDays);
 
     const [holiday, approvedLeave] = await Promise.all([
       this.prisma.companyHoliday.findFirst({
@@ -125,11 +149,13 @@ export class AttendanceService {
 
     const leaveType = approvedLeave?.type?.toLowerCase();
     const isHalfDayLeave = approvedLeave ? approvedLeave.days <= 0.5 : false;
+    const isFullHoliday = !!holiday && !holiday.isHalfDay;
 
     return {
       date: dayStart,
-      isWeekend: this.calculation.isWeekendDay(dayStart, weekendDays),
-      isHoliday: !!holiday,
+      isWeekend: weekdayKind === 'OFF',
+      isHalfWorkingDay: weekdayKind === 'HALF' || (!!holiday && holiday.isHalfDay),
+      isHoliday: isFullHoliday,
       hasApprovedLeave: !!approvedLeave,
       leaveType,
       isHalfDayLeave,
@@ -230,6 +256,7 @@ export class AttendanceService {
       employeeContext.tenantId,
       settings,
       employeeContext.shift,
+      today,
     );
     const dayContext = await this.getDayContext(
       employeeContext.tenantId,
@@ -237,11 +264,10 @@ export class AttendanceService {
       today,
       settings,
     );
-    const lateMinutes = this.calculation.computeLateMinutes(
-      now,
-      schedule,
-      settings.lateArrivalGraceMinutes,
-    );
+    const lateGrace =
+      settings.lateArrivalGraceMinutes +
+      (settings.scheduleMode === 'FLEXIBLE' ? (employeeContext.shift?.flexibleGraceMinutes ?? 0) : 0);
+    const lateMinutes = this.calculation.computeLateMinutes(now, schedule, lateGrace);
     const status = this.calculation.resolveAttendanceStatus(
       dayContext,
       lateMinutes,
@@ -320,6 +346,7 @@ export class AttendanceService {
       employeeContext.tenantId,
       settings,
       employeeContext.shift,
+      today,
     );
     const dayContext = await this.getDayContext(
       employeeContext.tenantId,
@@ -332,6 +359,8 @@ export class AttendanceService {
       employeeId: employeeContext.id,
       salary: employeeContext.salary,
       overtimeEligible: employeeContext.shift?.overtimeEligible ?? true,
+      isNightShift: employeeContext.shift?.isNightShift ?? schedule.isNightShift ?? false,
+      flexibleGraceMinutes: employeeContext.shift?.flexibleGraceMinutes ?? 0,
       settings,
       schedule,
       dayContext,
@@ -376,7 +405,10 @@ export class AttendanceService {
     employeeId: number;
     salary: number;
     overtimeEligible: boolean;
+    isNightShift?: boolean;
+    flexibleGraceMinutes?: number;
     settings: {
+      scheduleMode?: string;
       workStartTime: string;
       workEndTime: string;
       lateArrivalGraceMinutes: number;
@@ -391,54 +423,101 @@ export class AttendanceService {
       missingClockInAction: string;
       missingClockOutAction: string;
       missingBothAction: string;
+      requireManagerApproval?: boolean;
     };
-    schedule: { workStartTime: string; workEndTime: string; breakMinutes: number };
+    schedule: {
+      workStartTime: string;
+      workEndTime: string;
+      breakMinutes: number;
+      isNightShift?: boolean;
+      flexibleGraceMinutes?: number;
+    };
     dayContext: Awaited<ReturnType<AttendanceService['getDayContext']>>;
     date: Date;
     clockIn: Date;
     clockOut: Date;
     existingLateMinutes?: number;
   }) {
+    const flexibleExtra =
+      input.settings.scheduleMode === 'FLEXIBLE'
+        ? (input.flexibleGraceMinutes ?? input.schedule.flexibleGraceMinutes ?? 0)
+        : 0;
+    const lateGrace = input.settings.lateArrivalGraceMinutes + flexibleExtra;
     const lateMinutes =
       input.existingLateMinutes !== undefined
         ? input.existingLateMinutes
-        : this.calculation.computeLateMinutes(
-            input.clockIn,
-            input.schedule,
-            input.settings.lateArrivalGraceMinutes,
-          );
-    const earlyMinutes = this.calculation.computeEarlyDepartureMinutes(
-      input.clockOut,
-      input.schedule,
-      input.settings.earlyDepartureGraceMinutes,
-    );
+        : this.calculation.computeLateMinutes(input.clockIn, input.schedule, lateGrace);
+
+    const isNightShift = input.isNightShift ?? input.schedule.isNightShift ?? false;
+    const scheduledEnd = this.calculation.resolveScheduledEnd(input.schedule, input.date, isNightShift);
+    const earlyGraceMs = input.settings.earlyDepartureGraceMinutes * 60_000;
+    const earlyGraceStart = new Date(scheduledEnd.getTime() - earlyGraceMs);
+    const earlyMinutes =
+      input.clockOut.getTime() >= earlyGraceStart.getTime()
+        ? 0
+        : Math.round((earlyGraceStart.getTime() - input.clockOut.getTime()) / 60_000);
+
     const hours = this.calculation.computeWorkedHours(
       input.clockIn,
       input.clockOut,
       input.schedule.breakMinutes,
     );
     const overtimeRules = this.calculation.resolveOvertimeRules(input.settings.overtimeRules);
-    const overtimeHours =
+    const otSchedule = {
+      workStartTime: input.schedule.workStartTime,
+      workEndTime: `${String(scheduledEnd.getHours()).padStart(2, '0')}:${String(scheduledEnd.getMinutes()).padStart(2, '0')}`,
+      breakMinutes: input.schedule.breakMinutes,
+    };
+    // Night-shift OT: compare against absolute end via clockOut date window.
+    let overtimeHours =
       input.settings.overtimeEnabled && overtimeRules.enabled && input.overtimeEligible
         ? this.calculation.computeOvertimeHours(
             input.clockIn,
             input.clockOut,
-            input.schedule,
+            isNightShift
+              ? {
+                  workStartTime: input.schedule.workStartTime,
+                  workEndTime: input.schedule.workEndTime,
+                  breakMinutes: input.schedule.breakMinutes,
+                }
+              : otSchedule,
             overtimeRules,
             input.dayContext,
           )
         : 0;
+
+    if (isNightShift && overtimeHours === 0 && overtimeRules.enabled && input.overtimeEligible) {
+      const overtimeMinutes = Math.max(
+        0,
+        Math.round((input.clockOut.getTime() - scheduledEnd.getTime()) / 60_000),
+      );
+      if (overtimeMinutes >= overtimeRules.minimumMinutes) {
+        let rounded = overtimeMinutes;
+        if (overtimeRules.roundToMinutes > 0) {
+          rounded = Math.floor(overtimeMinutes / overtimeRules.roundToMinutes) * overtimeRules.roundToMinutes;
+        }
+        let multiplier = overtimeRules.weekdayMultiplier;
+        if (input.dayContext.isHoliday) {
+          multiplier = overtimeRules.holidayMultiplier;
+        } else if (input.dayContext.isWeekend) {
+          multiplier = overtimeRules.weekendMultiplier;
+        }
+        overtimeHours = Math.round((rounded / 60) * multiplier * 100) / 100;
+      }
+    }
+
+    // requireManagerApproval / OT requiresApproval: hours kept; payroll skips cash OT when approval required.
+
     const payrollIntegration = this.calculation.resolvePayrollIntegration(
       input.settings.payrollIntegration,
     );
     const scheduledStart = this.calculation.parseTimeOnDate(input.schedule.workStartTime, input.date);
-    const scheduledEnd = this.calculation.parseTimeOnDate(input.schedule.workEndTime, input.date);
     const scheduledHours = Math.max(
       0,
       (scheduledEnd.getTime() - scheduledStart.getTime()) / (1000 * 60 * 60) -
         input.schedule.breakMinutes / 60,
     );
-    const dailySalary = input.salary / 22;
+    const dailySalary = this.calculation.resolveDailySalary(input.salary, payrollIntegration);
     const monthlyLateCount = await this.countMonthlyLateArrivals(
       input.employeeId,
       input.date,
@@ -456,6 +535,7 @@ export class AttendanceService {
       lateAction,
       input.settings.earlyDepartureAction,
       payrollIntegration,
+      input.salary,
     );
     const status = this.calculation.resolveAttendanceStatus(
       input.dayContext,
@@ -505,6 +585,8 @@ export class AttendanceService {
             endTime: true,
             breakMinutes: true,
             overtimeEligible: true,
+            isNightShift: true,
+            flexibleGraceMinutes: true,
           },
         },
       },
@@ -534,7 +616,12 @@ export class AttendanceService {
     const clockOutDate = dto.clockOut ? new Date(dto.clockOut) : null;
 
     const settings = await this.ensureSettings(targetEmployee.tenantId);
-    const schedule = await this.resolveSchedule(targetEmployee.tenantId, settings, targetEmployee.shift);
+    const schedule = await this.resolveSchedule(
+      targetEmployee.tenantId,
+      settings,
+      targetEmployee.shift,
+      date,
+    );
     const dayContext = await this.getDayContext(targetEmployee.tenantId, dto.employeeId, date, settings);
 
     let payload: Prisma.AttendanceUncheckedUpdateInput = {
@@ -771,6 +858,11 @@ export class AttendanceService {
           ) as Prisma.InputJsonValue)
         : undefined,
       weekendDays: dto.weekendDays ? (dto.weekendDays as Prisma.InputJsonValue) : undefined,
+      halfWorkingDays:
+        dto.halfWorkingDays !== undefined
+          ? (this.sanitizeHalfWorkingDays(dto.weekendDays ?? existing.weekendDays, dto.halfWorkingDays) as Prisma.InputJsonValue)
+          : undefined,
+      halfDayEndTime: dto.halfDayEndTime,
     };
 
     return this.prisma.attendanceSettings.upsert({
@@ -787,6 +879,12 @@ export class AttendanceService {
       },
       update: data,
     });
+  }
+
+  private sanitizeHalfWorkingDays(weekendRaw: unknown, halfRaw: unknown): number[] {
+    const weekendDays = this.calculation.parseWeekdayList(weekendRaw, [6, 0]);
+    const halfWorkingDays = this.calculation.parseWeekdayList(halfRaw, []);
+    return halfWorkingDays.filter((day) => !weekendDays.includes(day));
   }
 
   async listShifts(user: RequestUser) {
@@ -894,6 +992,7 @@ export class AttendanceService {
         date,
         isRecurring: dto.isRecurring ?? false,
         isPaid: dto.isPaid ?? true,
+        isHalfDay: dto.isHalfDay ?? false,
       },
     });
   }

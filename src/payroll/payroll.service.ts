@@ -2,6 +2,7 @@ import { BadRequestException, ForbiddenException, Injectable } from '@nestjs/com
 import { PrismaService } from '../prisma/prisma.service';
 import { CreatePayrollRunDto } from './dto/create-payroll-run.dto';
 import { UpdatePayrollRunDto } from './dto/update-payroll-run.dto';
+import { AttendanceCalculationService } from '../attendance/attendance-calculation.service';
 import {
   SL_EPF_EMPLOYEE_RATE,
   SL_EPF_EMPLOYER_RATE,
@@ -47,7 +48,10 @@ function calculateStatutory(basicPay: number, allowances: number) {
 
 @Injectable()
 export class PayrollService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly attendanceCalculation: AttendanceCalculationService,
+  ) {}
 
   private requireTenant(user: RequestUser): number {
     const tenantId = user?.tenantId;
@@ -133,11 +137,24 @@ export class PayrollService {
     const [periodYear, periodMonth] = run.period.split('-').map((value) => Number(value));
     const canteenDeductionByEmployee = new Map<number, number>();
     const attendanceDeductionByEmployee = new Map<number, number>();
+    const leaveDeductionByEmployee = new Map<number, number>();
     const overtimeAllowanceByEmployee = new Map<number, number>();
+    const breakdownByEmployee = new Map<number, Array<{ type: string; amount: number; reason: string }>>();
+    let payrollIntegration = this.attendanceCalculation.resolvePayrollIntegration(null);
+
+    const pushBreakdown = (employeeId: number, type: string, amount: number, reason: string) => {
+      if (amount <= 0 && type !== 'OT_TIME_OFF') {
+        return;
+      }
+      const rows = breakdownByEmployee.get(employeeId) ?? [];
+      rows.push({ type, amount: Math.round(amount * 100) / 100, reason });
+      breakdownByEmployee.set(employeeId, rows);
+    };
+
     if (Number.isInteger(periodYear) && Number.isInteger(periodMonth)) {
       const startDate = new Date(periodYear, periodMonth - 1, 1);
       const endDate = new Date(periodYear, periodMonth, 1);
-      const [canteenEntries, attendanceSettings, attendanceRows] = await Promise.all([
+      const [canteenEntries, attendanceSettings, attendanceRows, leaveRows] = await Promise.all([
         this.prisma.canteenMealEntry.findMany({
           where: {
             tenantId,
@@ -166,6 +183,24 @@ export class PayrollService {
             payrollAdjustment: true,
             overtimeHours: true,
             status: true,
+            date: true,
+          },
+        }),
+        this.prisma.leaveRequest.findMany({
+          where: {
+            status: 'APPROVED',
+            employee: { tenantId },
+            startDate: { lt: endDate },
+            endDate: { gte: startDate },
+          },
+          select: {
+            employeeId: true,
+            type: true,
+            unpaidDays: true,
+            paidDays: true,
+            days: true,
+            startDate: true,
+            endDate: true,
           },
         }),
       ]);
@@ -177,70 +212,161 @@ export class PayrollService {
         );
       }
 
-      const payrollIntegration =
-        attendanceSettings?.payrollIntegration &&
-        typeof attendanceSettings.payrollIntegration === 'object'
-          ? (attendanceSettings.payrollIntegration as {
-              deductLateArrivals?: boolean;
-              deductEarlyDepartures?: boolean;
-              deductAbsences?: boolean;
-              includeOvertime?: boolean;
-            })
-          : null;
+      payrollIntegration = this.attendanceCalculation.resolvePayrollIntegration(
+        attendanceSettings?.payrollIntegration,
+      );
+      const overtimeRules = this.attendanceCalculation.resolveOvertimeRules(
+        attendanceSettings?.overtimeRules,
+      );
 
       for (const row of attendanceRows) {
-        if (payrollIntegration?.deductLateArrivals || payrollIntegration?.deductEarlyDepartures) {
-          attendanceDeductionByEmployee.set(
-            row.employeeId,
-            (attendanceDeductionByEmployee.get(row.employeeId) ?? 0) + (row.payrollAdjustment ?? 0),
-          );
+        if (payrollIntegration.ignoreWeekends && row.status === 'WEEKEND') {
+          continue;
+        }
+        if (payrollIntegration.ignoreCompanyHolidays && row.status === 'HOLIDAY') {
+          continue;
+        }
+        if (payrollIntegration.ignoreApprovedLeave && String(row.status).startsWith('ON_LEAVE')) {
+          continue;
         }
 
-        if (payrollIntegration?.deductAbsences && row.status === 'ABSENT') {
+        if (payrollIntegration.deductLateArrivals || payrollIntegration.deductEarlyDepartures) {
+          const adj = row.payrollAdjustment ?? 0;
+          if (adj > 0) {
+            attendanceDeductionByEmployee.set(
+              row.employeeId,
+              (attendanceDeductionByEmployee.get(row.employeeId) ?? 0) + adj,
+            );
+            pushBreakdown(
+              row.employeeId,
+              'ATTENDANCE',
+              adj,
+              `Attendance adjustment on ${this.attendanceCalculation.toDateKey(row.date)} (late/early rule)`,
+            );
+          }
+        }
+
+        if (payrollIntegration.deductAbsences && row.status === 'ABSENT') {
           const employee = employees.find((item) => item.id === row.employeeId);
           if (employee) {
-            const dailySalary = employee.salary / 22;
+            const dailySalary = this.attendanceCalculation.resolveDailySalary(
+              employee.salary,
+              payrollIntegration,
+            );
             attendanceDeductionByEmployee.set(
               row.employeeId,
               (attendanceDeductionByEmployee.get(row.employeeId) ?? 0) + dailySalary,
+            );
+            pushBreakdown(
+              row.employeeId,
+              'ABSENCE',
+              dailySalary,
+              `Absent on ${this.attendanceCalculation.toDateKey(row.date)} — 1 day salary deducted`,
             );
           }
         }
 
         if (
-          payrollIntegration?.includeOvertime &&
+          payrollIntegration.includeOvertime &&
           row.overtimeHours > 0 &&
-          this.shouldPayOvertime(attendanceSettings?.overtimeRules, attendanceSettings?.overtimeEnabled)
+          attendanceSettings?.overtimeEnabled
         ) {
           const employee = employees.find((item) => item.id === row.employeeId);
-          if (employee) {
-            const hourlyRate = employee.salary / (22 * 8);
+          if (!employee) {
+            continue;
+          }
+
+          if (overtimeRules.compensationMode === 'TIME_OFF') {
+            const standardHours = this.attendanceCalculation.resolveStandardHoursPerDay(payrollIntegration);
+            const leaveDays = this.attendanceCalculation.roundDays(
+              row.overtimeHours / (standardHours > 0 ? standardHours : 8),
+            );
+            if (leaveDays > 0) {
+              await this.creditAnnualLeaveForOt(tenantId, row.employeeId, leaveDays);
+              pushBreakdown(
+                row.employeeId,
+                'OT_TIME_OFF',
+                0,
+                `OT ${row.overtimeHours}h converted to ${leaveDays} Annual leave day(s) (TIME_OFF mode)`,
+              );
+            }
+          } else if (
+            overtimeRules.compensationMode === 'PAY' &&
+            !overtimeRules.requiresApproval &&
+            !attendanceSettings.requireManagerApproval
+          ) {
+            const overtimePay = this.attendanceCalculation.computeOvertimePay(
+              employee.salary,
+              row.overtimeHours,
+              overtimeRules,
+              payrollIntegration,
+            );
             overtimeAllowanceByEmployee.set(
               row.employeeId,
-              (overtimeAllowanceByEmployee.get(row.employeeId) ?? 0) + row.overtimeHours * hourlyRate,
+              (overtimeAllowanceByEmployee.get(row.employeeId) ?? 0) + overtimePay,
             );
           }
         }
       }
+
+      // Unpaid leave (beyond entitlement) — company holidays & paid leave do NOT deduct.
+      for (const leave of leaveRows) {
+        const unpaid =
+          leave.unpaidDays > 0
+            ? leave.unpaidDays
+            : 0;
+        if (unpaid <= 0) {
+          continue;
+        }
+        const employee = employees.find((item) => item.id === leave.employeeId);
+        if (!employee) {
+          continue;
+        }
+        const dailySalary = this.attendanceCalculation.resolveDailySalary(
+          employee.salary,
+          payrollIntegration,
+        );
+        const amount = this.attendanceCalculation.roundDays(unpaid) * dailySalary;
+        leaveDeductionByEmployee.set(
+          leave.employeeId,
+          (leaveDeductionByEmployee.get(leave.employeeId) ?? 0) + amount,
+        );
+        const paid = leave.paidDays > 0 ? leave.paidDays : Math.max(0, leave.days - unpaid);
+        pushBreakdown(
+          leave.employeeId,
+          'UNPAID_LEAVE',
+          amount,
+          `Unpaid ${leave.type} leave: ${unpaid} day(s) beyond entitlement (paid ${paid} of ${leave.days} from balance)`,
+        );
+      }
     }
 
     const payslipData = employees.map((emp) => {
-      const statutory =
-        calculateStatutory(emp.salary, 0);
+      const statutory = calculateStatutory(emp.salary, 0);
       const canteenDeduction = Math.round((canteenDeductionByEmployee.get(emp.id) ?? 0) * 100) / 100;
       const attendanceDeduction = Math.round((attendanceDeductionByEmployee.get(emp.id) ?? 0) * 100) / 100;
+      const leaveDeduction = Math.round((leaveDeductionByEmployee.get(emp.id) ?? 0) * 100) / 100;
       const overtimeAllowance = Math.round((overtimeAllowanceByEmployee.get(emp.id) ?? 0) * 100) / 100;
       const grossPay = Math.round((statutory.grossPay + overtimeAllowance) * 100) / 100;
-      const deductions = Math.round((statutory.deductions + canteenDeduction + attendanceDeduction) * 100) / 100;
+      const deductions =
+        Math.round((statutory.deductions + canteenDeduction + attendanceDeduction + leaveDeduction) * 100) /
+        100;
       const netPay = Math.round((grossPay - deductions) * 100) / 100;
       totalGross += grossPay;
       totalNet += netPay;
+
+      if (canteenDeduction > 0) {
+        pushBreakdown(emp.id, 'CANTEEN', canteenDeduction, 'Canteen meal deductions');
+      }
+
       return {
         employeeId: emp.id,
         payrollRunId: id,
         basicPay: emp.salary,
         allowances: overtimeAllowance,
         attendanceDeduction,
+        leaveDeduction,
+        deductionBreakdown: breakdownByEmployee.get(emp.id) ?? [],
         grossPay,
         epfEmployee: statutory.epfEmployee,
         epfEmployer: statutory.epfEmployer,
@@ -263,6 +389,48 @@ export class PayrollService {
         processedAt: new Date(),
       },
     });
+  }
+
+  private async creditAnnualLeaveForOt(tenantId: number, employeeId: number, days: number) {
+    const policy = await this.prisma.leavePolicy.findFirst({
+      where: {
+        tenantId,
+        OR: [
+          { code: { equals: 'annual', mode: 'insensitive' } },
+          { name: { contains: 'annual', mode: 'insensitive' } },
+        ],
+      },
+    });
+    if (!policy) {
+      return;
+    }
+
+    const balance = await this.prisma.leaveBalance.findUnique({
+      where: {
+        employeeId_leavePolicyId: {
+          employeeId,
+          leavePolicyId: policy.id,
+        },
+      },
+    });
+
+    if (balance) {
+      await this.prisma.leaveBalance.update({
+        where: { id: balance.id },
+        data: { allocated: { increment: days } },
+      });
+    } else {
+      await this.prisma.leaveBalance.create({
+        data: {
+          tenantId,
+          employeeId,
+          leavePolicyId: policy.id,
+          allocated: policy.days + days,
+          used: 0,
+          accrued: days,
+        },
+      });
+    }
   }
 
   async update(id: number, dto: UpdatePayrollRunDto, user: RequestUser) {

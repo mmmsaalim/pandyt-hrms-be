@@ -4,7 +4,7 @@ import { Prisma } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 import { createHash, randomBytes } from 'crypto';
 import { EmailService } from '../email/email.service';
-import { PrismaService } from '../prisma/prisma.service';
+import { PrismaService, PrismaTxClient } from '../prisma/prisma.service';
 import { CreateTenantDto } from './dto/create-tenant.dto';
 import { UpdateTenantDto } from './dto/update-tenant.dto';
 import { TenantLeadStatusEnum } from './dto/create-tenant.dto';
@@ -24,7 +24,7 @@ import {
 import { buildPaginatedResult, parsePaginationQuery } from '../common/pagination';
 import { normalizeCompanyProfile, readCompanyProfile } from './tenant-company-profile.constants';
 
-type TxClient = Prisma.TransactionClient;
+type TxClient = PrismaTxClient;
 
 @Injectable()
 export class TenantsService {

@@ -1,6 +1,6 @@
 import { BadRequestException, forwardRef, Inject, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
-import { PrismaService } from '../prisma/prisma.service';
+import { PrismaService, PrismaTxClient } from '../prisma/prisma.service';
 import { AuditLogService } from '../common/audit-log.service';
 import { LeaveService } from '../leave/leave.service';
 import { LeaveSetupConfig } from '../leave/leave.constants';
@@ -56,7 +56,7 @@ export type TenantRuntimeConfig = {
   };
 };
 
-type TxClient = Prisma.TransactionClient;
+type TxClient = PrismaTxClient;
 
 type TenantCustomFieldDefinition = {
   fieldKey: string;
