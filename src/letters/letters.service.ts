@@ -8,6 +8,24 @@ type LetterAccessContext = {
   roles: string[];
 };
 
+const LETTER_TYPE_LABELS: Record<string, string> = {
+  GENERAL: 'General letter',
+  APPOINTMENT: 'Appointment letter',
+  WARNING: 'Warning letter',
+  CONFIRMATION: 'Confirmation letter',
+  OFFER: 'Offer letter',
+  EXPERIENCE: 'Experience certificate',
+};
+
+const LETTER_TYPE_SUBJECTS: Record<string, string> = {
+  GENERAL: 'General Communication',
+  APPOINTMENT: 'Appointment as [Job Title]',
+  WARNING: 'Formal Warning — [Reason]',
+  CONFIRMATION: 'Confirmation of Employment',
+  OFFER: 'Offer of Employment — [Job Title]',
+  EXPERIENCE: 'Experience Certificate — [Employee Name]',
+};
+
 @Injectable()
 export class LettersService {
   constructor(
@@ -129,6 +147,13 @@ export class LettersService {
         ? (letterheadRaw as Record<string, string>)
         : {};
 
+    const locale = runtimeConfig.config.locale || 'en-GB';
+    const issueDate = new Intl.DateTimeFormat(locale, {
+      day: '2-digit',
+      month: 'long',
+      year: 'numeric',
+    }).format(new Date());
+
     return {
       letter,
       letterhead: {
@@ -138,8 +163,14 @@ export class LettersService {
         email: letterhead.email || '',
         logoUrl: letterhead.logoUrl || '',
       },
-      locale: runtimeConfig.config.locale,
+      locale,
       currency: runtimeConfig.config.currency,
+      printMeta: {
+        referenceNo: `HR/${tenantId}/${letter.id}/${new Date().getFullYear()}`,
+        issueDate,
+        letterTypeLabel: LETTER_TYPE_LABELS[letter.letterType] ?? letter.letterType,
+        subject: LETTER_TYPE_SUBJECTS[letter.letterType] ?? letter.title,
+      },
     };
   }
 

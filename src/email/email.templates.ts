@@ -1,3 +1,4 @@
+import { APP_BRAND_NAME } from '../common/constants/app.constant';
 import {
   SendAccountActivationEmailInput,
   SendBillingReminderEmailInput,
@@ -8,19 +9,17 @@ import {
   SendPasswordResetEmailInput,
 } from './email.types';
 
-const brand = 'Pandyt HR Cloud';
-
 function baseLayout(title: string, body: string): string {
   return `
     <div style="margin:0;background:#fff4eb;padding:32px 16px;font-family:Arial,sans-serif;color:#2a2623;">
       <div style="max-width:640px;margin:0 auto;background:#ffffff;border-radius:18px;overflow:hidden;border:1px solid #f1d9c6;box-shadow:0 18px 48px rgba(92,48,16,0.16);">
         <div style="padding:28px 32px;background:linear-gradient(135deg,#f89a55,#f47421);color:#ffffff;">
-          <div style="font-size:12px;letter-spacing:0.2em;text-transform:uppercase;opacity:0.9;">PANDYT</div>
+          <div style="font-size:12px;letter-spacing:0.2em;text-transform:uppercase;opacity:0.9;text-overflow:ellipsis;overflow:hidden;white-space:nowrap;">${APP_BRAND_NAME}</div>
           <h1 style="margin:10px 0 0;font-size:28px;line-height:1.2;">${title}</h1>
         </div>
         <div style="padding:32px;line-height:1.7;font-size:15px;color:#4d3c30;">${body}</div>
         <div style="padding:20px 32px;border-top:1px solid #f3e3d8;font-size:12px;color:#8f7563;">
-          You received this message because your account is managed by Pandyt services. If you did not expect it, contact support.
+          You received this message because your account is managed by ${APP_BRAND_NAME}. If you did not expect it, contact support.
         </div>
       </div>
     </div>
@@ -36,12 +35,12 @@ function button(url: string, label: string): string {
 }
 
 export function buildOnboardingEmail(input: SendOnboardingEmailInput) {
-  const subject = `Welcome to ${brand} - complete your admin setup`;
+  const subject = `Welcome to ${APP_BRAND_NAME} - complete your admin setup`;
   const html = baseLayout(
     subject,
     `
       <p style="margin:0 0 16px;">Hello ${input.fullName},</p>
-      <p style="margin:0 0 16px;">Your company <strong>${input.companyName}</strong> has been created in ${brand}. Set your password to activate the admin account and finish onboarding.</p>
+      <p style="margin:0 0 16px;">Your company <strong>${input.companyName}</strong> has been created in ${APP_BRAND_NAME}. Set your password to activate the admin account and finish onboarding.</p>
       <div style="margin:24px 0;">${button(input.activationUrl, 'Set password')}</div>
       <p style="margin:0 0 8px;">Direct link:</p>
       <p style="margin:0 0 16px;word-break:break-all;"><a href="${input.activationUrl}">${input.activationUrl}</a></p>
@@ -52,7 +51,7 @@ export function buildOnboardingEmail(input: SendOnboardingEmailInput) {
 
   const text = [
     `Hello ${input.fullName},`,
-    `Your company ${input.companyName} has been created in ${brand}.`,
+    `Your company ${input.companyName} has been created in ${APP_BRAND_NAME}.`,
     `Set your password: ${input.activationUrl}`,
     `Login: ${input.loginUrl}`,
   ].join('\n\n');
@@ -61,7 +60,7 @@ export function buildOnboardingEmail(input: SendOnboardingEmailInput) {
 }
 
 export function buildInvitationEmail(input: SendInvitationEmailInput) {
-  const subject = `Invitation to join ${input.companyName} on ${brand}`;
+  const subject = `Invitation to join ${input.companyName} on ${APP_BRAND_NAME}`;
   const html = baseLayout(
     subject,
     `
@@ -84,12 +83,12 @@ export function buildInvitationEmail(input: SendInvitationEmailInput) {
 }
 
 export function buildPasswordResetEmail(input: SendPasswordResetEmailInput) {
-  const subject = 'Reset your Pandyt password';
+  const subject = `Reset your ${APP_BRAND_NAME} password`;
   const html = baseLayout(
     subject,
     `
       <p style="margin:0 0 16px;">Hello ${input.fullName},</p>
-      <p style="margin:0 0 16px;">We received a request to reset your password for your Pandyt company workspace. Use the button below to choose a new password.</p>
+      <p style="margin:0 0 16px;">We received a request to reset your password for your ${APP_BRAND_NAME} company workspace. Use the button below to choose a new password.</p>
       <div style="margin:24px 0;">${button(input.resetUrl, 'Reset password')}</div>
       <p style="margin:0 0 8px;">This link expires in ${input.expiresHours} hours.</p>
       <p style="margin:0;word-break:break-all;"><a href="${input.resetUrl}">${input.resetUrl}</a></p>
@@ -106,7 +105,7 @@ export function buildPasswordResetEmail(input: SendPasswordResetEmailInput) {
 }
 
 export function buildAccountActivationEmail(input: SendAccountActivationEmailInput) {
-  const subject = `${brand} account activated for ${input.companyName}`;
+  const subject = `${APP_BRAND_NAME} account activated for ${input.companyName}`;
   const html = baseLayout(
     subject,
     `

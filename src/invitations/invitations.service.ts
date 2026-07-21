@@ -4,6 +4,7 @@ import * as bcrypt from 'bcrypt';
 import { createHash, randomBytes } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import { EmailService } from '../email/email.service';
+import { APP_BRAND_NAME } from '../common/constants/app.constant';
 
 type CreateInvitationInput = {
   tenantId: number;
@@ -169,7 +170,7 @@ export class InvitationsService {
       await this.emailService.sendAccountActivationEmail({
         to: invitation.user.email,
         fullName: `${invitation.user.firstName} ${invitation.user.lastName}`.trim(),
-        companyName: invitation.tenant?.name ?? 'Pandyt HR Cloud',
+        companyName: invitation.tenant?.name ?? APP_BRAND_NAME,
         loginUrl: `${appUrl}/login`,
         supportEmail: this.config.get<string>('MAIL_SUPPORT_EMAIL') ?? undefined,
       });
@@ -246,7 +247,7 @@ export class InvitationsService {
     await this.emailService.sendInvitationEmail({
       to: invitation.email,
       fullName,
-      companyName: invitation.tenant?.name ?? 'Pandyt HR Cloud',
+      companyName: invitation.tenant?.name ?? APP_BRAND_NAME,
       role: invitation.role,
       acceptUrl: this.acceptUrl(rawToken),
       expiresHours,

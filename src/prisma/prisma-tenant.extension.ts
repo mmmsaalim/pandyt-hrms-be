@@ -16,6 +16,19 @@ const TENANT_MODELS = new Set([
   'AttendanceSettings',
   'WorkShift',
   'CompanyHoliday',
+  // BRD §6.6 & §6.9: Recruitment module models
+  'JobPost',
+  // BRD §6.8: HR Letter & Feedback modules (included on all plans)
+  'HrLetter',
+  'HrFeedback',
+  // BRD §6.4, §15.2: Canteen settings (tenant-scoped)
+  'CanteenSettings',
+  'CanteenMealEntry',
+  // BRD §14.2, §14.4: Tenant configuration platform models
+  'TenantBillingSettings',
+  'TenantModuleSetting',
+  'TenantFieldSetting',
+  'BillingReminderDispatch',
 ]);
 
 type QueryArgs = Record<string, unknown> & {
@@ -23,11 +36,34 @@ type QueryArgs = Record<string, unknown> & {
   data?: Record<string, unknown> | Array<Record<string, unknown>>;
 };
 
+function shouldSkipTenantWhere(where?: Record<string, unknown>): boolean {
+  if (!where) {
+    return false;
+  }
+
+  // Global identity roles (EMPLOYEE, TEAM_LEAD, HR_MANAGER, etc.) use tenantId: null.
+  if (where.tenantId === null) {
+    return true;
+  }
+
+  // Mixed global + tenant queries (e.g. RBAC configuration) must not be narrowed.
+  if (Array.isArray(where.OR) && where.OR.length > 0) {
+    return true;
+  }
+
+  return false;
+}
+
 function withTenantWhere(args: QueryArgs, tenantId: number): QueryArgs {
+  const where = args.where ?? {};
+  if (shouldSkipTenantWhere(where)) {
+    return args;
+  }
+
   return {
     ...args,
     where: {
-      ...(args.where ?? {}),
+      ...where,
       tenantId,
     },
   };

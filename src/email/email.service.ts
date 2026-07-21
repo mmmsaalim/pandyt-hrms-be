@@ -2,6 +2,7 @@ import { BadGatewayException, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as nodemailer from 'nodemailer';
 import { Resend } from 'resend';
+import { APP_BRAND_NAME, APP_BRAND_EMAIL_DOMAIN } from '../common/constants/app.constant';
 import {
   buildAccountActivationEmail,
   buildBillingReminderEmail,
@@ -63,11 +64,11 @@ export class EmailService {
   private fromEmail(): string {
     return this.config.get<string>('MAIL_FROM')
       ?? this.config.get<string>('EMAIL_FROM')
-      ?? 'no-reply@pandyt.local';
+      ?? `no-reply@${APP_BRAND_EMAIL_DOMAIN}`;
   }
 
   private fromName(): string {
-    return this.config.get<string>('MAIL_FROM_NAME', 'Pandyt HR Cloud');
+    return this.config.get<string>('MAIL_FROM_NAME') ?? APP_BRAND_NAME;
   }
 
   private configuredProvider(): EmailProviderName | 'auto' {

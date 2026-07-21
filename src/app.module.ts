@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { ScheduleModule } from '@nestjs/schedule';
 import { AuthModule } from './auth/auth.module';
+import { TenantScopedRepository } from './common/tenant-scoped.repository';
 import { UsersModule } from './users/users.module';
 import { RolesModule } from './roles/roles.module';
 import { TenantsModule } from './tenants/tenants.module';
@@ -49,6 +50,6 @@ import { FeedbackModule } from './feedback/feedback.module';
     FeedbackModule,
     CrossTenantReportsModule,
   ],
-  providers: [],
+  providers: [TenantScopedRepository],
 })
 export class AppModule {}

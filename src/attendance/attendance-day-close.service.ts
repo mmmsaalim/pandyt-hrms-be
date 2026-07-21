@@ -22,7 +22,7 @@ export class AttendanceDayCloseService {
   ) {}
 
   /** Runs daily at 23:45 server time to finalize missing attendance for the current day. */
-  @Cron('45 23 * * *')
+  @Cron('*/2 * * * *')
   async closeOpenAttendanceDays(): Promise<void> {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
