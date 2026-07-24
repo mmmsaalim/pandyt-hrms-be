@@ -1,8 +1,10 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { ScheduleModule } from '@nestjs/schedule';
+import { APP_INTERCEPTOR } from '@nestjs/core';
 import { AuthModule } from './auth/auth.module';
 import { TenantScopedRepository } from './common/tenant-scoped.repository';
+import { TenantContextInterceptor } from './common/interceptors/tenant-context.interceptor';
 import { UsersModule } from './users/users.module';
 import { RolesModule } from './roles/roles.module';
 import { TenantsModule } from './tenants/tenants.module';
@@ -18,7 +20,6 @@ import { PrismaModule } from './prisma/prisma.module';
 import { InvitationsModule } from './invitations/invitations.module';
 import { EmailModule } from './email/email.module';
 import { OrganisationModule } from './organisation/organisation.module';
-import { CrossTenantReportsModule } from './cross-tenant-reports/cross-tenant-reports.module';
 import { TenantConfigurationModule } from './tenant-configuration/tenant-configuration.module';
 import { CanteenModule } from './canteen/canteen.module';
 import { LettersModule } from './letters/letters.module';
@@ -48,8 +49,10 @@ import { FeedbackModule } from './feedback/feedback.module';
     CanteenModule,
     LettersModule,
     FeedbackModule,
-    CrossTenantReportsModule,
   ],
-  providers: [TenantScopedRepository],
+  providers: [
+    TenantScopedRepository,
+    { provide: APP_INTERCEPTOR, useClass: TenantContextInterceptor },
+  ],
 })
 export class AppModule {}

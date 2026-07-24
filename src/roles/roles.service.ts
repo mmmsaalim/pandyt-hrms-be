@@ -8,7 +8,12 @@ import { SetRolePermissionsDto } from './dto/set-role-permissions.dto';
 import { AssignScopedUserRoleDto } from './dto/assign-scoped-user-role.dto';
 import { UnassignScopedUserRoleDto } from './dto/unassign-scoped-user-role.dto';
 import { TenantConfigurationService } from '../tenant-configuration/tenant-configuration.service';
-import { permissionToModule } from '../tenant-configuration/tenant-configuration.constants';
+import {
+  ALL_BUSINESS_MODULE_KEYS,
+  permissionToModule,
+} from '../tenant-configuration/tenant-configuration.constants';
+import { RoleBootstrapService } from './role-bootstrap.service';
+import { isJobGovernedPermission } from './rbac.constants';
 
 type RequestUser = { sub: number; roles?: string[]; tenantId?: number | null } | undefined;
 
@@ -17,6 +22,7 @@ export class RolesService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly tenantConfigurationService: TenantConfigurationService,
+    private readonly roleBootstrapService: RoleBootstrapService,
   ) {}
 
   private async resolveActor(user: RequestUser) {
@@ -134,13 +140,20 @@ export class RolesService {
         enabledSet.has(permissionToModule(permission.module)),
       );
 
+      const businessModuleKeys = new Set<string>(ALL_BUSINESS_MODULE_KEYS);
       filteredRoles = roles.filter((role) => {
         if (role.tenantId === null) {
           return true;
         }
 
-        const moduleKey = role.name.toLowerCase();
-        return enabledSet.has(moduleKey);
+        const key = role.name.toLowerCase();
+        // A module (access) role is named after a module — hide it only when that
+        // module is disabled. Job roles (TEAM_LEAD, HR_MANAGER, EMPLOYEE) and custom
+        // roles are not module names, so they are always shown/configurable.
+        if (businessModuleKeys.has(key)) {
+          return enabledSet.has(key);
+        }
+        return true;
       });
     }
 
@@ -215,6 +228,12 @@ export class RolesService {
         continue;
       }
 
+      // Job-governed actions (e.g. leave.manage) live on tenant job roles, not
+      // module roles — keep module roles access-tier only.
+      if (isJobGovernedPermission(permission.permission)) {
+        continue;
+      }
+
       grouped.set(permission.module, [...(grouped.get(permission.module) ?? []), permission.id]);
     }
 
@@ -261,6 +280,10 @@ export class RolesService {
         }
       });
     }
+
+    // Also provision the tenant's editable job roles (HR_MANAGER, TEAM_LEAD,
+    // EMPLOYEE) so their action permissions are configurable in Access Configuration.
+    await this.roleBootstrapService.syncJobRoles(actor.tenantId!);
 
     return {
       success: true,

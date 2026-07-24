@@ -81,3 +81,13 @@ export type SendOffboardingEmailInput = {
   companyName: string;
   reason: string;
 };
+
+export type SendTenantMessageEmailInput = {
+  to: string;
+  fullName: string;
+  companyName: string;
+  subject: string;
+  message: string;
+  loginUrl: string;
+  supportEmail?: string;
+};

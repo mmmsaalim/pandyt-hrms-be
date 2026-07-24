@@ -403,26 +403,13 @@ export class AuthService {
           const role = entry.role;
           const permissionKeys = role.rolePermissions.map((rp) => rp.permission.permission);
 
-          if (role.name === 'SUPER_ADMIN') {
-            return permissionKeys;
-          }
+          // Data-driven: a role's effective permissions are exactly its configured
+          // rolePermissions. No hardcoded role-name → permission mappings — action
+          // permissions (e.g. leave.manage) come from whichever tenant job role the
+          // Company Admin has granted them in Access Configuration.
 
-          if (role.name === 'COMPANY_ADMIN' && role.tenantId === null) {
-            return permissionKeys;
-          }
-
-          if (role.name === 'HR_MANAGER' && role.tenantId === null) {
-            return [];
-          }
-
-          if (role.name === 'TEAM_LEAD' && role.tenantId === null) {
-            return [];
-          }
-
-          if (role.name === 'EMPLOYEE' && role.tenantId === null) {
-            return [];
-          }
-
+          // Security guard retained: the tenant CONFIGURATION role only takes effect
+          // for Company Admins (RBAC management must not leak to other holders).
           if (role.tenantId !== null && role.name === 'CONFIGURATION') {
             return roles.includes('COMPANY_ADMIN') ? permissionKeys : [];
           }

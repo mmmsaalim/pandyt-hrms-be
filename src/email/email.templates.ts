@@ -7,7 +7,17 @@ import {
   SendOnboardingEmailInput,
   SendOverduePaymentReminderEmailInput,
   SendPasswordResetEmailInput,
+  SendTenantMessageEmailInput,
 } from './email.types';
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
 
 function baseLayout(title: string, body: string): string {
   return `
@@ -197,6 +207,32 @@ export function buildBillingReminderEmail(input: SendBillingReminderEmailInput) 
     `Amount due: ${amount}`,
     `Due date: ${input.renewalDate}`,
     `Days left: ${input.daysLeft}`,
+    `Sign in: ${input.loginUrl}`,
+  ].join('\n\n');
+
+  return { subject, html, text };
+}
+
+export function buildTenantMessageEmail(input: SendTenantMessageEmailInput) {
+  const subject = input.subject;
+  const messageHtml = escapeHtml(input.message).replace(/\n/g, '<br />');
+  const html = baseLayout(
+    subject,
+    `
+      <p style="margin:0 0 16px;">Hello ${input.fullName},</p>
+      <p style="margin:0 0 16px;">You have a new message from the ${APP_BRAND_NAME} team regarding <strong>${input.companyName}</strong>:</p>
+      <div style="margin:0 0 20px;padding:14px 16px;background:#fff9f4;border-radius:10px;border:1px solid #f1d9c6;">${messageHtml}</div>
+      <div style="margin:24px 0;">${button(input.loginUrl, 'Open your workspace')}</div>
+      <p style="margin:0;">Sign in link:</p>
+      <p style="margin:8px 0 0;word-break:break-all;"><a href="${input.loginUrl}">${input.loginUrl}</a></p>
+      ${input.supportEmail ? `<p style="margin:16px 0 0;">Need help? Contact <a href="mailto:${input.supportEmail}">${input.supportEmail}</a>.</p>` : ''}
+    `,
+  );
+
+  const text = [
+    `Hello ${input.fullName},`,
+    `Message regarding ${input.companyName}:`,
+    input.message,
     `Sign in: ${input.loginUrl}`,
   ].join('\n\n');
 

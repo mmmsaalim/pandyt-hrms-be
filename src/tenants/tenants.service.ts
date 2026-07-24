@@ -485,6 +485,56 @@ export class TenantsService {
     };
   }
 
+  async sendTenantMessage(tenantId: number, dto: { subject: string; message: string }) {
+    const tenant = await this.prisma.tenant.findUnique({
+      where: { id: tenantId },
+      include: { billingSettings: true },
+    });
+
+    if (!tenant) {
+      throw new NotFoundException('Tenant not found.');
+    }
+
+    const settings = this.mapBillingSettings(tenant.id, tenant.billingSettings);
+    const recipients = await this.resolveBillingRecipients(tenant.id, settings.recipientEmails);
+
+    if (recipients.length === 0) {
+      return {
+        tenantId: tenant.id,
+        companyName: tenant.name,
+        recipients: 0,
+        message: 'No billing contacts or company admin recipients were found.',
+      };
+    }
+
+    let sent = 0;
+    for (const recipient of recipients) {
+      try {
+        await this.emailService.sendTenantMessageEmail({
+          to: recipient.email,
+          fullName: recipient.fullName,
+          companyName: tenant.name,
+          subject: dto.subject,
+          message: dto.message,
+          loginUrl: this.loginUrl(),
+          supportEmail: this.config.get<string>('MAIL_SUPPORT_EMAIL') ?? undefined,
+        });
+        sent += 1;
+      } catch (error) {
+        this.logger.warn(
+          `Tenant message could not be sent to ${recipient.email}: ${error instanceof Error ? error.message : 'unknown error'}`,
+        );
+      }
+    }
+
+    return {
+      tenantId: tenant.id,
+      companyName: tenant.name,
+      recipients: sent,
+      recipientEmails: recipients.map((recipient) => recipient.email),
+    };
+  }
+
   async sendOverdueReminders() {
     const overdueTenants = await this.prisma.tenant.findMany({
       where: { status: 'SUSPENDED' },

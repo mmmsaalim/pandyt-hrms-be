@@ -2,12 +2,14 @@ import { ForbiddenException, Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { normalizePlan } from '../tenant-configuration/tenant-configuration.constants';
 import { TenantConfigurationService } from '../tenant-configuration/tenant-configuration.service';
+import { HrCalendarService } from './hr-calendar.service';
 
 @Injectable()
 export class DashboardService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly tenantConfigurationService: TenantConfigurationService,
+    private readonly hrCalendar: HrCalendarService,
   ) {}
 
   private monthLabel(date: Date): string {
@@ -432,6 +434,9 @@ export class DashboardService {
       count: recruitmentPipeline.find((r) => r.stage === stage)?._count?.id ?? 0,
     }));
 
+    const upcomingBirthdays = await this.hrCalendar.getUpcomingBirthdays(tenantId, { daysAhead: 30 });
+    const upcomingHolidays = this.hrCalendar.getUpcomingHolidays(now, 5);
+
     return {
       employees,
       leavePending,
@@ -450,6 +455,8 @@ export class DashboardService {
       leaveTrendSeries,
       recentHires,
       recruitmentFunnel,
+      upcomingBirthdays,
+      upcomingHolidays,
     };
   }
 
@@ -532,6 +539,11 @@ export class DashboardService {
 
     const payrollSnapshot = { labels: [], runSeries: [], amountSeries: [] };
 
+    const upcomingBirthdays = directReportIds.length
+      ? await this.hrCalendar.getUpcomingBirthdays(tenantId, { employeeIds: directReportIds, daysAhead: 30 })
+      : [];
+    const upcomingHolidays = this.hrCalendar.getUpcomingHolidays(new Date(), 5);
+
     return {
       employees: employeesCount,
       leavePending: leavePendingCount,
@@ -545,6 +557,8 @@ export class DashboardService {
       payrollLabels: payrollSnapshot.labels,
       payrollRunsSeries: payrollSnapshot.runSeries,
       payrollAmountSeries: payrollSnapshot.amountSeries,
+      upcomingBirthdays,
+      upcomingHolidays,
     };
   }
 
@@ -577,112 +591,18 @@ export class DashboardService {
 
     // Team birthdays: colleagues with DOB in the next 30 days
     const today = new Date();
-    const teamBirthdays = await this.getUpcomingBirthdays(tenantId, employeeId, 30);
+    const teamBirthdays = await this.hrCalendar.getUpcomingBirthdays(tenantId, {
+      excludeEmployeeId: employeeId,
+      daysAhead: 30,
+    });
 
     // Sri Lanka public holidays (static list for current year)
-    const upcomingHolidays = this.getSriLankaUpcomingHolidays(today, 5);
+    const upcomingHolidays = this.hrCalendar.getUpcomingHolidays(today, 5);
 
     return {
       ...profile,
       teamBirthdays,
       upcomingHolidays,
     };
-  }
-
-  private async getUpcomingBirthdays(
-    tenantId: number,
-    excludeEmployeeId: number,
-    daysAhead: number,
-  ) {
-    const employees = await this.prisma.employee.findMany({
-      where: {
-        tenantId,
-        deletedAt: null,
-        id: { not: excludeEmployeeId },
-        dateOfBirth: { not: null },
-      },
-      select: {
-        id: true,
-        dateOfBirth: true,
-        user: { select: { firstName: true, lastName: true } },
-      },
-    });
-
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const upcoming: Array<{ name: string; date: string; daysUntil: number }> = [];
-
-    for (const emp of employees) {
-      if (!emp.dateOfBirth) continue;
-      const dob = new Date(emp.dateOfBirth);
-      const thisYearBirthday = new Date(today.getFullYear(), dob.getMonth(), dob.getDate());
-
-      if (thisYearBirthday < today) {
-        thisYearBirthday.setFullYear(today.getFullYear() + 1);
-      }
-
-      const daysUntil = Math.round(
-        (thisYearBirthday.getTime() - today.getTime()) / (1000 * 60 * 60 * 24),
-      );
-
-      if (daysUntil <= daysAhead) {
-        upcoming.push({
-          name: `${emp.user?.firstName ?? ''} ${emp.user?.lastName ?? ''}`.trim() || `Employee #${emp.id}`,
-          date: thisYearBirthday.toISOString().split('T')[0],
-          daysUntil,
-        });
-      }
-    }
-
-    return upcoming.sort((a, b) => a.daysUntil - b.daysUntil);
-  }
-
-  private getSriLankaUpcomingHolidays(
-    from: Date,
-    take: number,
-  ): Array<{ name: string; date: string; daysUntil: number }> {
-    const year = from.getFullYear();
-    const holidays = [
-      { name: 'Thai Pongal', month: 1, day: 14 },
-      { name: 'Independence Day', month: 2, day: 4 },
-      { name: 'Maha Sivarathri', month: 2, day: 26 },
-      { name: 'Milad un Nabi', month: 3, day: 31 },
-      { name: 'Sinhala & Tamil New Year', month: 4, day: 13 },
-      { name: 'Sinhala & Tamil New Year (Holiday)', month: 4, day: 14 },
-      { name: 'Labour Day', month: 5, day: 1 },
-      { name: 'Vesak Full Moon Poya', month: 5, day: 12 },
-      { name: 'Poson Full Moon Poya', month: 6, day: 11 },
-      { name: 'Esala Full Moon Poya', month: 7, day: 10 },
-      { name: 'Nikini Full Moon Poya', month: 8, day: 9 },
-      { name: 'Binara Full Moon Poya', month: 9, day: 7 },
-      { name: 'Vap Full Moon Poya', month: 10, day: 6 },
-      { name: 'Deepavali', month: 10, day: 20 },
-      { name: 'Ill Full Moon Poya', month: 11, day: 5 },
-      { name: 'Christmas Day', month: 12, day: 25 },
-      { name: 'Unduvap Full Moon Poya', month: 12, day: 4 },
-    ];
-
-    const today = new Date(from);
-    today.setHours(0, 0, 0, 0);
-
-    const result: Array<{ name: string; date: string; daysUntil: number }> = [];
-
-    for (const h of holidays) {
-      let hDate = new Date(year, h.month - 1, h.day);
-      if (hDate < today) {
-        hDate = new Date(year + 1, h.month - 1, h.day);
-      }
-
-      const daysUntil = Math.round(
-        (hDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24),
-      );
-
-      result.push({ name: h.name, date: hDate.toISOString().split('T')[0], daysUntil });
-    }
-
-    return result
-      .filter((h) => h.daysUntil >= 0)
-      .sort((a, b) => a.daysUntil - b.daysUntil)
-      .slice(0, take);
   }
 }

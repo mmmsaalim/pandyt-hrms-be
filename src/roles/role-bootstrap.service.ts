@@ -1,5 +1,11 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import {
+  DEFAULT_JOB_ROLE_PERMISSIONS,
+  JOB_ROLE_NAMES,
+  JobRoleName,
+  isJobGovernedPermission,
+} from './rbac.constants';
 
 /**
  * Single source of truth for tenant module-role bootstrap.
@@ -56,13 +62,17 @@ export class RoleBootstrapService {
           this.logger.log(`Created module role ${roleName} for tenant ${tenantId}`);
         }
 
-        // Fetch all permissions for this module from the platform catalog
-        const modulePermissions = await tx.permission.findMany({
-          where: { module: moduleKey },
-        });
+        // Fetch this module's access-tier permissions from the platform catalog.
+        // Job-governed actions (e.g. leave.manage) are excluded here — they are
+        // granted only via tenant job roles so they stay per-role configurable.
+        const modulePermissions = (
+          await tx.permission.findMany({
+            where: { module: moduleKey },
+          })
+        ).filter((permission) => !isJobGovernedPermission(permission.permission));
 
         if (modulePermissions.length === 0) {
-          this.logger.warn(`No permissions found for module ${moduleKey}`);
+          this.logger.warn(`No access-tier permissions found for module ${moduleKey}`);
           continue;
         }
 
@@ -101,6 +111,64 @@ export class RoleBootstrapService {
         this.logger.debug(`Synced ${modulePermissions.length} permissions for role ${roleName}`);
       }
     });
+  }
+
+  /**
+   * Ensure the tenant has its own editable job roles (HR_MANAGER, TEAM_LEAD,
+   * EMPLOYEE). These carry the action permissions (e.g. leave.manage) and are
+   * configured per tenant in Access Configuration.
+   *
+   * Default permissions are seeded ONLY when a role is first created, so a
+   * Company Admin's later edits are never overwritten by a re-sync/invite.
+   *
+   * @returns map of job role name → tenant-scoped role id
+   */
+  async syncJobRoles(tenantId: number): Promise<Record<string, number>> {
+    const result: Record<string, number> = {};
+
+    await this.prisma.$transaction(async (tx) => {
+      for (const roleName of JOB_ROLE_NAMES) {
+        const existing = await tx.role.findFirst({
+          where: { tenantId, name: roleName },
+          select: { id: true },
+        });
+
+        if (existing) {
+          result[roleName] = existing.id;
+          continue;
+        }
+
+        const role = await tx.role.create({
+          data: {
+            name: roleName,
+            tenantId,
+            description: `Tenant ${roleName} role — configurable in Access Configuration`,
+          },
+          select: { id: true },
+        });
+        result[roleName] = role.id;
+        this.logger.log(`Created job role ${roleName} for tenant ${tenantId}`);
+
+        const defaults = DEFAULT_JOB_ROLE_PERMISSIONS[roleName as JobRoleName] ?? [];
+        if (defaults.length > 0) {
+          const permissions = await tx.permission.findMany({
+            where: { permission: { in: defaults } },
+            select: { id: true },
+          });
+          if (permissions.length > 0) {
+            await tx.rolePermission.createMany({
+              data: permissions.map((permission) => ({
+                roleId: role.id,
+                permissionId: permission.id,
+              })),
+              skipDuplicates: true,
+            });
+          }
+        }
+      }
+    });
+
+    return result;
   }
 
   /**

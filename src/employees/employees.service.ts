@@ -16,8 +16,17 @@ import { InvitationsService } from '../invitations/invitations.service';
 import { TenantConfigurationService } from '../tenant-configuration/tenant-configuration.service';
 import { EmailService } from '../email/email.service';
 import { OffboardEmployeeDto } from './dto/offboard-employee.dto';
+import {
+  DEFAULT_JOB_ROLE_PERMISSIONS,
+  DEFAULT_MODULE_GROUPS,
+  JobRoleName,
+  isJobGovernedPermission,
+  isJobRoleName,
+} from '../roles/rbac.constants';
 
-type RequestUser = { sub: number; roles?: string[] } | undefined;
+type RequestUser =
+  | { sub: number; roles?: string[]; permissions?: string[]; effectivePermissions?: string[] }
+  | undefined;
 type TxClient = PrismaTxClient;
 
 @Injectable()
@@ -225,16 +234,60 @@ export class EmployeesService {
     });
   }
 
+  /**
+   * Ensure the tenant has its own editable job role (HR_MANAGER / TEAM_LEAD /
+   * EMPLOYEE) and return its id. Default action permissions are seeded only when
+   * the role is first created, so Access Configuration edits are never clobbered.
+   */
+  private async ensureTenantJobRole(tx: TxClient, tenantId: number, roleName: string): Promise<number> {
+    const existing = await tx.role.findFirst({
+      where: { tenantId, name: roleName },
+      select: { id: true },
+    });
+    if (existing) {
+      return existing.id;
+    }
+
+    const role = await tx.role.create({
+      data: {
+        tenantId,
+        name: roleName,
+        description: `Tenant ${roleName} role — configurable in Access Configuration`,
+      },
+      select: { id: true },
+    });
+
+    const defaults = DEFAULT_JOB_ROLE_PERMISSIONS[roleName as JobRoleName] ?? [];
+    if (defaults.length > 0) {
+      const permissions = await tx.permission.findMany({
+        where: { permission: { in: defaults } },
+        select: { id: true },
+      });
+      if (permissions.length > 0) {
+        await tx.rolePermission.createMany({
+          data: permissions.map((permission) => ({ roleId: role.id, permissionId: permission.id })),
+          skipDuplicates: true,
+        });
+      }
+    }
+
+    return role.id;
+  }
+
   private async ensureModuleAccess(
     tx: TxClient,
     tenantId: number,
     userId: number,
     modules: string[],
   ) {
-    const permissions = await tx.permission.findMany({
-      where: { module: { in: modules } },
-      orderBy: [{ module: 'asc' }, { permission: 'asc' }],
-    });
+    // Access-tier permissions only — job-governed actions (e.g. leave.manage)
+    // live on tenant job roles, not module roles.
+    const permissions = (
+      await tx.permission.findMany({
+        where: { module: { in: modules } },
+        orderBy: [{ module: 'asc' }, { permission: 'asc' }],
+      })
+    ).filter((permission) => !isJobGovernedPermission(permission.permission));
 
     const grouped = new Map<string, number[]>();
     for (const permission of permissions) {
@@ -493,21 +546,28 @@ export class EmployeesService {
 
     const isCompanyAdmin = this.hasRole(user, 'COMPANY_ADMIN');
     const isHRManager = this.hasRole(user, 'HR_MANAGER');
+    // Access Configuration can grant the employees.invite permission to any tenant
+    // module role (e.g. a team lead), so honour the permission — not only the two
+    // built-in admin roles. Company Admin / HR Manager already carry this permission.
+    const grantedPermissions = user?.effectivePermissions ?? user?.permissions ?? [];
+    const hasInvitePermission = grantedPermissions.includes('employees.invite');
 
-    if (!isCompanyAdmin && !isHRManager) {
-      throw new ForbiddenException('Only COMPANY_ADMIN or HR_MANAGER can invite users.');
+    if (!isCompanyAdmin && !isHRManager && !hasInvitePermission) {
+      throw new ForbiddenException('You do not have permission to invite employees.');
     }
 
     // HR manager is restricted to operational roles inside tenant.
-    if (isHRManager) {
+    if (isHRManager && !isCompanyAdmin) {
       const restrictedRoles = ['HR_MANAGER', 'TEAM_LEAD', 'EMPLOYEE'];
       if (!restrictedRoles.includes(dto.role)) {
         throw new ForbiddenException('HR_MANAGER can only create HR_MANAGER, TEAM_LEAD, or EMPLOYEE roles.');
       }
     }
 
-    if (isHRManager && dto.role === 'COMPANY_ADMIN') {
-      throw new ForbiddenException('Only COMPANY_ADMIN can create COMPANY_ADMIN role.');
+    // A delegated inviter (has employees.invite but is not COMPANY_ADMIN / HR_MANAGER)
+    // may only onboard base EMPLOYEE accounts — they cannot mint elevated roles.
+    if (!isCompanyAdmin && !isHRManager && dto.role !== 'EMPLOYEE') {
+      throw new ForbiddenException('You can only invite users with the EMPLOYEE role.');
     }
 
     // Validate requested role
@@ -539,7 +599,9 @@ export class EmployeesService {
 
     const requestedRole = dto.role;
 
-    const role = await this.prisma.role.findFirst({
+    // Shared (tenantId=null) role acts as the template; job roles are assigned as
+    // their tenant-scoped, editable copy (created below inside the transaction).
+    const sharedRole = await this.prisma.role.findFirst({
       where: {
         name: requestedRole,
         tenantId: null,
@@ -547,7 +609,7 @@ export class EmployeesService {
       select: { id: true },
     });
 
-    if (!role) {
+    if (!sharedRole) {
       throw new NotFoundException(`${requestedRole} role is not configured.`);
     }
 
@@ -587,16 +649,9 @@ export class EmployeesService {
       dto.customFields,
     );
 
-    // Define module access per role
-    const moduleAccessMap: Record<string, string[]> = {
-      EMPLOYEE: ['attendance', 'leave', 'payslips', 'reports'],
-      TEAM_LEAD: ['attendance', 'leave', 'reports', 'canteen'],
-      HR_MANAGER: ['employees', 'leave', 'attendance', 'payroll', 'payslips', 'reports', 'recruitment', 'canteen'],
-      COMPANY_ADMIN: ['employees', 'leave', 'attendance', 'payroll', 'payslips', 'reports', 'recruitment', 'configuration', 'canteen'],
-    };
-
-    const modulesForRole = (moduleAccessMap[requestedRole] || moduleAccessMap.EMPLOYEE).filter((module) =>
-      enabledModules.includes(module),
+    // Default module (access) groups per role — centralized in rbac.constants.
+    const modulesForRole = (DEFAULT_MODULE_GROUPS[requestedRole] || DEFAULT_MODULE_GROUPS.EMPLOYEE).filter(
+      (module) => enabledModules.includes(module),
     );
 
     const result = await this.prisma.$transaction(async (tx) => {
@@ -622,10 +677,17 @@ export class EmployeesService {
         },
       });
 
+      // Job roles (HR_MANAGER/TEAM_LEAD/EMPLOYEE) are assigned as the tenant's
+      // own editable copy so the Company Admin can configure their actions per
+      // tenant. Other roles (e.g. COMPANY_ADMIN) use the shared template role.
+      const assignedRoleId = isJobRoleName(requestedRole)
+        ? await this.ensureTenantJobRole(tx, adminContext.tenantId, requestedRole)
+        : sharedRole.id;
+
       await tx.userRole.create({
         data: {
           userId: createdUser.id,
-          roleId: role.id,
+          roleId: assignedRoleId,
         },
       });
 

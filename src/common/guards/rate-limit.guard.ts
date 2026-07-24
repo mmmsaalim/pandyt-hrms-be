@@ -21,11 +21,26 @@ export class RateLimitGuard implements CanActivate {
       return true;
     }
 
+    // Rate limiting is on in production by default and off elsewhere so local
+    // testing (repeated logins across roles) is not blocked. Override with the
+    // RATE_LIMIT_ENABLED env var ('true' / 'false') in any environment.
+    if (!RateLimitGuard.isEnabled()) {
+      return true;
+    }
+
     const request = context.switchToHttp().getRequest<Request>();
     const ip = request.ip || request.socket.remoteAddress || 'unknown';
     const key = `${ip}:${request.method}:${request.path}`;
 
     this.rateLimitService.consume(key, options.limit, options.ttlSeconds);
     return true;
+  }
+
+  private static isEnabled(): boolean {
+    const flag = process.env.RATE_LIMIT_ENABLED;
+    if (flag !== undefined) {
+      return flag.trim().toLowerCase() === 'true';
+    }
+    return process.env.NODE_ENV === 'production';
   }
 }

@@ -77,30 +77,14 @@ export async function seedRolesAndPermissions(prisma: PrismaClient): Promise<Rol
       'recruitment.read',
       'recruitment.manage',
     ]),
-    setRolePermissions(hrManagerRole.id, [
-      'employees.read',
-      'employees.invite',
-      'leave.read',
-      'leave.manage',
-      'attendance.read',
-      'canteen.read',
-      'canteen.manage',
-      'reports.read',
-      'organisation.read',
-      'organisation.manage',
-      'recruitment.read',
-      'recruitment.manage',
-    ]),
-    setRolePermissions(teamLeadRole.id, [
-      'leave.read',
-      'leave.manage',
-      'attendance.read',
-      'canteen.read',
-      'canteen.manage',
-      'reports.read',
-      'organisation.read',
-    ]),
-    setRolePermissions(employeeRole.id, ['leave.read', 'attendance.read', 'organisation.read']),
+    // Shared (tenantId=null) job roles are inert name-templates. A user's real
+    // permissions come from their tenant-scoped job role (actions, e.g. leave.manage)
+    // plus module roles (read/access). Keeping these empty prevents cross-tenant
+    // leakage once permission resolution is fully data-driven. Tenant copies are
+    // seeded from DEFAULT_JOB_ROLE_PERMISSIONS (src/roles/rbac.constants.ts).
+    setRolePermissions(hrManagerRole.id, []),
+    setRolePermissions(teamLeadRole.id, []),
+    setRolePermissions(employeeRole.id, []),
   ]);
 
   return {

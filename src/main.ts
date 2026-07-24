@@ -4,7 +4,6 @@ import { NestExpressApplication } from '@nestjs/platform-express';
 import { NextFunction, Request, Response } from 'express';
 import { join } from 'path';
 import { AppModule } from './app.module';
-import { TenantContext } from './common/tenant-context';
 import { validateSecurityConfig } from './common/security/validate-security-config';
 
 async function bootstrap() {
@@ -31,15 +30,6 @@ async function bootstrap() {
     res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
     res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
     next();
-  });
-
-  app.use((req: Request, _res: Response, next: NextFunction) => {
-    const rawHeader = req.headers?.['x-tenant-id'];
-    const headerValue = Array.isArray(rawHeader) ? rawHeader[0] : rawHeader;
-    const parsedTenantId = headerValue ? Number(headerValue) : null;
-    const tenantId = Number.isFinite(parsedTenantId) ? parsedTenantId : null;
-
-    TenantContext.run(tenantId, next);
   });
 
   app.setGlobalPrefix('api');

@@ -4,15 +4,17 @@ import { CreateEmployeeDto } from './dto/create-employee.dto';
 import { UpdateEmployeeDto } from './dto/update-employee.dto';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
+import { PermissionsGuard } from '../common/guards/permissions.guard';
 import { ModuleEnabledGuard } from '../common/guards/module-enabled.guard';
 import { Roles } from '../common/decorators/roles.decorator';
+import { RequirePermissions } from '../common/decorators/permissions.decorator';
 import { RequireModule } from '../common/decorators/require-module.decorator';
 import { Req } from '@nestjs/common';
 import { InviteEmployeeDto } from './dto/invite-employee.dto';
 import { OffboardEmployeeDto } from './dto/offboard-employee.dto';
 import { EnableEmployeeLoginDto } from './dto/enable-employee-login.dto';
 
-@UseGuards(JwtAuthGuard, RolesGuard, ModuleEnabledGuard)
+@UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard, ModuleEnabledGuard)
 @RequireModule('employees')
 @Controller('employees')
 export class EmployeesController {
@@ -58,7 +60,7 @@ export class EmployeesController {
   }
 
   @Post('invite')
-  @Roles('COMPANY_ADMIN', 'HR_MANAGER')
+  @RequirePermissions('employees.invite')
   inviteEmployee(
     @Body() dto: InviteEmployeeDto,
     @Req() req: { user?: { sub: number; roles?: string[] } },

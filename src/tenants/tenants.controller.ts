@@ -19,6 +19,7 @@ import { RolesGuard } from '../common/guards/roles.guard';
 import { Roles } from '../common/decorators/roles.decorator';
 import { CreateCompanyWithAdminDto } from './dto/create-company-with-admin.dto';
 import { UpdateBillingSettingsDto } from './dto/update-billing-settings.dto';
+import { SendTenantEmailDto } from './dto/send-tenant-email.dto';
 
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Controller('tenants')
@@ -57,6 +58,12 @@ export class TenantsController {
   @Roles('SUPER_ADMIN')
   sendTenantOverdueReminder(@Param('tenantId', ParseIntPipe) tenantId: number) {
     return this.tenantsService.sendOverdueReminder(tenantId);
+  }
+
+  @Post('payments/:tenantId/email')
+  @Roles('SUPER_ADMIN')
+  sendTenantEmail(@Param('tenantId', ParseIntPipe) tenantId: number, @Body() dto: SendTenantEmailDto) {
+    return this.tenantsService.sendTenantMessage(tenantId, dto);
   }
 
   @Get('payments/:tenantId/settings')
