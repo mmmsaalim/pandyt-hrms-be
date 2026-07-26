@@ -257,18 +257,41 @@ export class EmployeesService {
       select: { id: true },
     });
 
-    const defaults = DEFAULT_JOB_ROLE_PERMISSIONS[roleName as JobRoleName] ?? [];
-    if (defaults.length > 0) {
-      const permissions = await tx.permission.findMany({
-        where: { permission: { in: defaults } },
-        select: { id: true },
-      });
-      if (permissions.length > 0) {
-        await tx.rolePermission.createMany({
-          data: permissions.map((permission) => ({ roleId: role.id, permissionId: permission.id })),
-          skipDuplicates: true,
-        });
+    // Seed = the role's job-governed actions PLUS the access-tier permissions of
+    // its default modules. Persisting the module tier here (instead of deriving
+    // it in the UI) is what lets Access Configuration pre-tick a role's existing
+    // access as real, saved data — so unticking it actually persists instead of
+    // being re-applied by a display-time overlay on the next page load.
+    const actionDefaults = DEFAULT_JOB_ROLE_PERMISSIONS[roleName as JobRoleName] ?? [];
+    const defaultModules = DEFAULT_MODULE_GROUPS[roleName] ?? [];
+
+    const [actionPermissions, modulePermissions] = await Promise.all([
+      actionDefaults.length
+        ? tx.permission.findMany({ where: { permission: { in: actionDefaults } }, select: { id: true } })
+        : Promise.resolve([] as Array<{ id: number }>),
+      defaultModules.length
+        ? tx.permission.findMany({
+            where: { module: { in: defaultModules } },
+            select: { id: true, permission: true },
+          })
+        : Promise.resolve([] as Array<{ id: number; permission: string }>),
+    ]);
+
+    // Job-governed actions are excluded from the module tier on purpose: e.g. the
+    // EMPLOYEE role's default modules include 'leave', but an employee must not
+    // inherit leave.manage from it.
+    const permissionIds = new Set<number>(actionPermissions.map((p) => p.id));
+    for (const permission of modulePermissions) {
+      if (!isJobGovernedPermission(permission.permission)) {
+        permissionIds.add(permission.id);
       }
+    }
+
+    if (permissionIds.size > 0) {
+      await tx.rolePermission.createMany({
+        data: [...permissionIds].map((permissionId) => ({ roleId: role.id, permissionId })),
+        skipDuplicates: true,
+      });
     }
 
     return role.id;

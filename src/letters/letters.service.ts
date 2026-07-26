@@ -1,7 +1,9 @@
-import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
 import { TenantConfigurationService } from '../tenant-configuration/tenant-configuration.service';
-import { CreateLetterDto, UpdateLetterDto } from './dto/create-letter.dto';
+import { EmailService } from '../email/email.service';
+import { CreateLetterDto, SendLetterEmailDto, UpdateLetterDto } from './dto/create-letter.dto';
 
 type LetterAccessContext = {
   userId: number;
@@ -31,6 +33,8 @@ export class LettersService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly tenantConfigurationService: TenantConfigurationService,
+    private readonly emailService: EmailService,
+    private readonly config: ConfigService,
   ) {}
 
   private isCompanyAdmin(roles: string[]): boolean {
@@ -172,6 +176,72 @@ export class LettersService {
         subject: LETTER_TYPE_SUBJECTS[letter.letterType] ?? letter.title,
       },
     };
+  }
+
+  async sendByEmail(
+    tenantId: number,
+    id: number,
+    dto: SendLetterEmailDto,
+    access: LetterAccessContext,
+  ) {
+    const letter = await this.getOne(tenantId, id, access);
+
+    // Resolve the recipient: either an existing employee (email taken from their
+    // account) or an explicit email address for someone not yet onboarded.
+    let to: string;
+    let recipientName: string;
+
+    if (dto.employeeId) {
+      const employee = await this.prisma.employee.findFirst({
+        where: { id: dto.employeeId, tenantId },
+        select: { user: { select: { email: true, firstName: true, lastName: true } } },
+      });
+
+      if (!employee?.user?.email) {
+        throw new BadRequestException('Selected employee does not have an email address on file.');
+      }
+
+      to = employee.user.email;
+      recipientName =
+        `${employee.user.firstName ?? ''} ${employee.user.lastName ?? ''}`.trim() ||
+        letter.recipientName ||
+        'Colleague';
+    } else if (dto.email) {
+      to = dto.email;
+      recipientName = dto.recipientName?.trim() || letter.recipientName || 'Colleague';
+    } else {
+      throw new BadRequestException('Provide an employee or an email address to send the letter to.');
+    }
+
+    const [tenant, sender] = await Promise.all([
+      this.prisma.tenant.findUnique({
+        where: { id: tenantId },
+        select: { name: true },
+      }),
+      this.prisma.user.findUnique({
+        where: { id: access.userId },
+        select: { firstName: true, lastName: true },
+      }),
+    ]);
+
+    const senderName = `${sender?.firstName ?? ''} ${sender?.lastName ?? ''}`.trim() || undefined;
+
+    await this.emailService.sendHrLetterEmail({
+      to,
+      recipientName,
+      companyName: tenant?.name ?? 'Your company',
+      subject: letter.title || 'Official Letter',
+      body: letter.body,
+      senderName,
+      supportEmail: this.config.get<string>('MAIL_SUPPORT_EMAIL') ?? undefined,
+    });
+
+    const updated = await this.prisma.hrLetter.update({
+      where: { id: letter.id },
+      data: { status: 'SENT', recipientName },
+    });
+
+    return { success: true, sentTo: to, letter: updated };
   }
 
   assertTenantAccess(userTenantId: number | null | undefined, tenantId: number) {

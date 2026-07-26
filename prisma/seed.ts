@@ -4,6 +4,7 @@ import { seedModuleAndFieldCatalog } from './seeds/catalog.seed';
 import { cleanupLegacyConfigurationRoles, seedDemoTenantData } from './seeds/demo-data.seed';
 import { seedRolesAndPermissions } from './seeds/roles-permissions.seed';
 import { backfillRbacJobRoles } from './seeds/rbac-backfill.seed';
+import { seedSriLankaHolidays } from './seeds/holidays.seed';
 import { createSeedPasswordHash, seedSuperAdmin, seedTenants } from './seeds/tenants.seed';
 
 const prisma = new PrismaClient();
@@ -20,6 +21,7 @@ async function main() {
   await cleanupLegacyConfigurationRoles(prisma);
   await backfillEmployeeProfileFields(prisma);
   await backfillRbacJobRoles(prisma);
+  await seedSriLankaHolidays(prisma);
 
   console.log('Seed completed successfully.');
 }

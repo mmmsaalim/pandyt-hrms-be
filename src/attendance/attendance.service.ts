@@ -202,11 +202,18 @@ export class AttendanceService {
 
     if (this.hasRole(user, 'TEAM_LEAD')) {
       return this.prisma.attendance.findMany({
+        // Their own attendance plus their direct reports' — a team lead clocks in
+        // too, so their own record must appear alongside their team's.
         where: {
-          employee: {
-            tenantId: employeeContext.tenantId,
-            managerId: employeeContext.id,
-          },
+          AND: [
+            { employee: { tenantId: employeeContext.tenantId } },
+            {
+              OR: [
+                { employeeId: employeeContext.id },
+                { employee: { managerId: employeeContext.id } },
+              ],
+            },
+          ],
         },
         include: {
           employee: {

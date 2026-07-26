@@ -2,7 +2,7 @@ import { Body, Controller, Delete, ForbiddenException, Get, Param, Patch, Post, 
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { Roles } from '../common/decorators/roles.decorator';
-import { CreateLetterDto, UpdateLetterDto } from './dto/create-letter.dto';
+import { CreateLetterDto, SendLetterEmailDto, UpdateLetterDto } from './dto/create-letter.dto';
 import { LettersService } from './letters.service';
 
 type LetterRequestUser = {
@@ -68,6 +68,16 @@ export class LettersController {
     @Body() dto: UpdateLetterDto,
   ) {
     return this.lettersService.update(this.tenantId(req), Number(id), dto, this.access(req));
+  }
+
+  @Post(':id/send')
+  @Roles('COMPANY_ADMIN', 'HR_MANAGER')
+  send(
+    @Req() req: { user?: LetterRequestUser },
+    @Param('id') id: string,
+    @Body() dto: SendLetterEmailDto,
+  ) {
+    return this.lettersService.sendByEmail(this.tenantId(req), Number(id), dto, this.access(req));
   }
 
   @Delete(':id')

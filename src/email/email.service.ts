@@ -12,6 +12,7 @@ import {
   buildPasswordResetEmail,
   buildOffboardingEmail,
   buildTenantMessageEmail,
+  buildHrLetterEmail,
 } from './email.templates';
 import {
   EmailProviderName,
@@ -23,6 +24,7 @@ import {
   SendOverduePaymentReminderEmailInput,
   SendPasswordResetEmailInput,
   SendTenantMessageEmailInput,
+  SendHrLetterEmailInput,
 } from './email.types';
 
 type BrevoPayload = {
@@ -295,6 +297,11 @@ export class EmailService {
 
   async sendTenantMessageEmail(input: SendTenantMessageEmailInput) {
     const template = buildTenantMessageEmail(input);
+    return this.dispatchEmail(template.subject, template.html, template.text, input.to);
+  }
+
+  async sendHrLetterEmail(input: SendHrLetterEmailInput) {
+    const template = buildHrLetterEmail(input);
     return this.dispatchEmail(template.subject, template.html, template.text, input.to);
   }
 }

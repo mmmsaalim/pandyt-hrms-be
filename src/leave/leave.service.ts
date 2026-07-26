@@ -168,16 +168,23 @@ export class LeaveService {
     }
 
     if (this.hasRole(user, 'TEAM_LEAD')) {
-      const canManageAll = this.hasPermission(user, 'leave.manage');
+      // A team lead sees only their own direct reports' leave (plus their own
+      // requests) — consistent with the Employees module, which scopes a team
+      // lead to managerId. leave.manage still governs whether they can approve
+      // (enforced in updateStatus), it does NOT widen visibility to the whole
+      // company; only COMPANY_ADMIN / HR_MANAGER see every request.
       return this.prisma.leaveRequest.findMany({
-        where: canManageAll
-          ? { employee: { tenantId: employeeContext.tenantId } }
-          : {
-              employee: {
-                tenantId: employeeContext.tenantId,
-                managerId: employeeContext.id,
-              },
+        where: {
+          AND: [
+            { employee: { tenantId: employeeContext.tenantId } },
+            {
+              OR: [
+                { employeeId: employeeContext.id },
+                { employee: { managerId: employeeContext.id } },
+              ],
             },
+          ],
+        },
         orderBy: { createdAt: 'desc' },
         include: {
           employee: { include: { user: true } },

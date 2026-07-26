@@ -4,24 +4,25 @@ import { CreatePayrollRunDto } from './dto/create-payroll-run.dto';
 import { UpdatePayrollRunDto } from './dto/update-payroll-run.dto';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
+import { PermissionsGuard } from '../common/guards/permissions.guard';
 import { ModuleEnabledGuard } from '../common/guards/module-enabled.guard';
-import { Roles } from '../common/decorators/roles.decorator';
+import { RequirePermissions } from '../common/decorators/permissions.decorator';
 import { RequireModule } from '../common/decorators/require-module.decorator';
 
-@UseGuards(JwtAuthGuard, RolesGuard, ModuleEnabledGuard)
+@UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard, ModuleEnabledGuard)
 @RequireModule('payroll')
 @Controller('payroll')
 export class PayrollController {
   constructor(private readonly payrollService: PayrollService) {}
 
   @Get()
-  @Roles('COMPANY_ADMIN')
+  @RequirePermissions('payroll.manage')
   findAll(@Req() req: { user?: { sub: number; roles?: string[]; tenantId?: number } }) {
     return this.payrollService.findAll(req.user);
   }
 
   @Post()
-  @Roles('COMPANY_ADMIN')
+  @RequirePermissions('payroll.manage')
   create(
     @Body() dto: CreatePayrollRunDto,
     @Req() req: { user?: { sub: number; roles?: string[]; tenantId?: number } },
@@ -36,7 +37,7 @@ export class PayrollController {
    * and generates payslips in one atomic run.
    */
   @Post(':id/process')
-  @Roles('COMPANY_ADMIN')
+  @RequirePermissions('payroll.manage')
   process(
     @Param('id', ParseIntPipe) id: number,
     @Req() req: { user?: { sub: number; roles?: string[]; tenantId?: number } },
@@ -45,7 +46,7 @@ export class PayrollController {
   }
 
   @Patch(':id')
-  @Roles('COMPANY_ADMIN')
+  @RequirePermissions('payroll.manage')
   update(
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: UpdatePayrollRunDto,
@@ -55,7 +56,7 @@ export class PayrollController {
   }
 
   @Delete(':id')
-  @Roles('COMPANY_ADMIN')
+  @RequirePermissions('payroll.manage')
   remove(
     @Param('id', ParseIntPipe) id: number,
     @Req() req: { user?: { sub: number; roles?: string[]; tenantId?: number } },

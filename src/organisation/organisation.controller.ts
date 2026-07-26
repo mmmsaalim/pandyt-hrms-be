@@ -13,11 +13,13 @@ import {
 import { OrganisationService } from './organisation.service';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
+import { PermissionsGuard } from '../common/guards/permissions.guard';
 import { ModuleEnabledGuard } from '../common/guards/module-enabled.guard';
 import { Roles } from '../common/decorators/roles.decorator';
+import { RequirePermissions } from '../common/decorators/permissions.decorator';
 import { RequireModule } from '../common/decorators/require-module.decorator';
 
-@UseGuards(JwtAuthGuard, RolesGuard, ModuleEnabledGuard)
+@UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard, ModuleEnabledGuard)
 @RequireModule('organisation')
 @Controller('organisation')
 export class OrganisationController {
@@ -39,6 +41,7 @@ export class OrganisationController {
 
   @Post('locations')
   @Roles('COMPANY_ADMIN', 'HR_MANAGER')
+  @RequirePermissions('organisation.manage')
   createLocation(
     @Body() dto: { name: string; address?: string },
     @Req() req: { user?: { sub: number; roles?: string[]; tenantId?: number | null } },
@@ -48,6 +51,7 @@ export class OrganisationController {
 
   @Patch('locations/:id')
   @Roles('COMPANY_ADMIN', 'HR_MANAGER')
+  @RequirePermissions('organisation.manage')
   updateLocation(
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: { name?: string; address?: string },
@@ -58,6 +62,7 @@ export class OrganisationController {
 
   @Delete('locations/:id')
   @Roles('COMPANY_ADMIN', 'HR_MANAGER')
+  @RequirePermissions('organisation.manage')
   deleteLocation(
     @Param('id', ParseIntPipe) id: number,
     @Req() req: { user?: { sub: number; roles?: string[]; tenantId?: number | null } },
@@ -74,6 +79,7 @@ export class OrganisationController {
 
   @Post('departments')
   @Roles('COMPANY_ADMIN', 'HR_MANAGER')
+  @RequirePermissions('organisation.manage')
   createDepartment(
     @Body() dto: { name: string; locationId?: number; managerId?: number },
     @Req() req: { user?: { sub: number; roles?: string[]; tenantId?: number | null } },
@@ -83,6 +89,7 @@ export class OrganisationController {
 
   @Patch('departments/:id')
   @Roles('COMPANY_ADMIN', 'HR_MANAGER')
+  @RequirePermissions('organisation.manage')
   updateDepartment(
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: { name?: string; locationId?: number | null; managerId?: number },
@@ -93,6 +100,7 @@ export class OrganisationController {
 
   @Delete('departments/:id')
   @Roles('COMPANY_ADMIN', 'HR_MANAGER')
+  @RequirePermissions('organisation.manage')
   deleteDepartment(
     @Param('id', ParseIntPipe) id: number,
     @Req() req: { user?: { sub: number; roles?: string[]; tenantId?: number | null } },
@@ -109,6 +117,7 @@ export class OrganisationController {
 
   @Post('teams')
   @Roles('COMPANY_ADMIN', 'HR_MANAGER')
+  @RequirePermissions('organisation.manage')
   createTeam(
     @Body() dto: { name: string; departmentId: number },
     @Req() req: { user?: { sub: number; roles?: string[]; tenantId?: number | null } },
@@ -118,6 +127,7 @@ export class OrganisationController {
 
   @Patch('teams/:id')
   @Roles('COMPANY_ADMIN', 'HR_MANAGER')
+  @RequirePermissions('organisation.manage')
   updateTeam(
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: { name?: string; departmentId?: number },
@@ -128,6 +138,7 @@ export class OrganisationController {
 
   @Delete('teams/:id')
   @Roles('COMPANY_ADMIN', 'HR_MANAGER')
+  @RequirePermissions('organisation.manage')
   deleteTeam(
     @Param('id', ParseIntPipe) id: number,
     @Req() req: { user?: { sub: number; roles?: string[]; tenantId?: number | null } },

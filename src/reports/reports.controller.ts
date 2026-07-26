@@ -5,25 +5,28 @@ import {
   ParseArrayPipe,
   Query,
   Req,
+  StreamableFile,
   UseGuards,
 } from '@nestjs/common';
 import { ReportsService } from './reports.service';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
+import { PermissionsGuard } from '../common/guards/permissions.guard';
 import { ModuleEnabledGuard } from '../common/guards/module-enabled.guard';
 import { Roles } from '../common/decorators/roles.decorator';
+import { RequirePermissions } from '../common/decorators/permissions.decorator';
 import { RequireModule } from '../common/decorators/require-module.decorator';
 
 type AuthedRequest = { user?: { sub: number; roles?: string[]; tenantId?: number } };
 
-@UseGuards(JwtAuthGuard, RolesGuard, ModuleEnabledGuard)
+@UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard, ModuleEnabledGuard)
 @RequireModule('reports')
 @Controller('reports')
 export class ReportsController {
   constructor(private readonly reportsService: ReportsService) {}
 
   @Get('summary')
-  @Roles('COMPANY_ADMIN', 'HR_MANAGER')
+  @RequirePermissions('reports.read')
   summary(@Req() req: AuthedRequest) {
     return this.reportsService.summary(req.user);
   }
@@ -47,7 +50,8 @@ export class ReportsController {
   async platformTenantsExportExcel(
     @Query('tenantIds', new ParseArrayPipe({ optional: true })) tenantIds?: string[],
   ) {
-    return this.reportsService.platformTenantReportExcel(tenantIds);
+    const buffer = await this.reportsService.platformTenantReportExcel(tenantIds);
+    return new StreamableFile(buffer);
   }
 
   // ---------------------------------------------------------------------
@@ -56,74 +60,78 @@ export class ReportsController {
   // ---------------------------------------------------------------------
 
   @Get('tenant/employees')
-  @Roles('COMPANY_ADMIN', 'HR_MANAGER')
+  @RequirePermissions('reports.read')
   tenantEmployees(@Req() req: AuthedRequest, @Query('from') from?: string, @Query('to') to?: string) {
     return this.reportsService.tenantEmployeesReport(req.user, from, to);
   }
 
   @Get('tenant/employees/export-excel')
-  @Roles('COMPANY_ADMIN', 'HR_MANAGER')
+  @RequirePermissions('reports.read')
   @Header('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
   @Header('Content-Disposition', 'attachment; filename="employees-report.xlsx"')
-  tenantEmployeesExportExcel(
+  async tenantEmployeesExportExcel(
     @Req() req: AuthedRequest,
     @Query('from') from?: string,
     @Query('to') to?: string,
   ) {
-    return this.reportsService.tenantEmployeesReportExcel(req.user, from, to);
+    const buffer = await this.reportsService.tenantEmployeesReportExcel(req.user, from, to);
+    return new StreamableFile(buffer);
   }
 
   @Get('tenant/leave')
-  @Roles('COMPANY_ADMIN', 'HR_MANAGER')
+  @RequirePermissions('reports.read')
   tenantLeave(@Req() req: AuthedRequest, @Query('from') from?: string, @Query('to') to?: string) {
     return this.reportsService.tenantLeaveReport(req.user, from, to);
   }
 
   @Get('tenant/leave/export-excel')
-  @Roles('COMPANY_ADMIN', 'HR_MANAGER')
+  @RequirePermissions('reports.read')
   @Header('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
   @Header('Content-Disposition', 'attachment; filename="leave-report.xlsx"')
-  tenantLeaveExportExcel(
+  async tenantLeaveExportExcel(
     @Req() req: AuthedRequest,
     @Query('from') from?: string,
     @Query('to') to?: string,
   ) {
-    return this.reportsService.tenantLeaveReportExcel(req.user, from, to);
+    const buffer = await this.reportsService.tenantLeaveReportExcel(req.user, from, to);
+    return new StreamableFile(buffer);
   }
 
   @Get('tenant/attendance')
-  @Roles('COMPANY_ADMIN', 'HR_MANAGER')
+  @RequirePermissions('reports.read')
   tenantAttendance(@Req() req: AuthedRequest, @Query('from') from?: string, @Query('to') to?: string) {
     return this.reportsService.tenantAttendanceReport(req.user, from, to);
   }
 
   @Get('tenant/attendance/export-excel')
-  @Roles('COMPANY_ADMIN', 'HR_MANAGER')
+  @RequirePermissions('reports.read')
   @Header('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
   @Header('Content-Disposition', 'attachment; filename="attendance-report.xlsx"')
-  tenantAttendanceExportExcel(
+  async tenantAttendanceExportExcel(
     @Req() req: AuthedRequest,
     @Query('from') from?: string,
     @Query('to') to?: string,
   ) {
-    return this.reportsService.tenantAttendanceReportExcel(req.user, from, to);
+    const buffer = await this.reportsService.tenantAttendanceReportExcel(req.user, from, to);
+    return new StreamableFile(buffer);
   }
 
   @Get('tenant/payroll')
-  @Roles('COMPANY_ADMIN', 'HR_MANAGER')
+  @RequirePermissions('reports.read')
   tenantPayroll(@Req() req: AuthedRequest, @Query('from') from?: string, @Query('to') to?: string) {
     return this.reportsService.tenantPayrollReport(req.user, from, to);
   }
 
   @Get('tenant/payroll/export-excel')
-  @Roles('COMPANY_ADMIN', 'HR_MANAGER')
+  @RequirePermissions('reports.read')
   @Header('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
   @Header('Content-Disposition', 'attachment; filename="payroll-report.xlsx"')
-  tenantPayrollExportExcel(
+  async tenantPayrollExportExcel(
     @Req() req: AuthedRequest,
     @Query('from') from?: string,
     @Query('to') to?: string,
   ) {
-    return this.reportsService.tenantPayrollReportExcel(req.user, from, to);
+    const buffer = await this.reportsService.tenantPayrollReportExcel(req.user, from, to);
+    return new StreamableFile(buffer);
   }
 }

@@ -435,7 +435,7 @@ export class DashboardService {
     }));
 
     const upcomingBirthdays = await this.hrCalendar.getUpcomingBirthdays(tenantId, { daysAhead: 30 });
-    const upcomingHolidays = this.hrCalendar.getUpcomingHolidays(now, 5);
+    const upcomingHolidays = await this.hrCalendar.getUpcomingHolidays(tenantId, now, 5);
 
     return {
       employees,
@@ -542,7 +542,7 @@ export class DashboardService {
     const upcomingBirthdays = directReportIds.length
       ? await this.hrCalendar.getUpcomingBirthdays(tenantId, { employeeIds: directReportIds, daysAhead: 30 })
       : [];
-    const upcomingHolidays = this.hrCalendar.getUpcomingHolidays(new Date(), 5);
+    const upcomingHolidays = await this.hrCalendar.getUpcomingHolidays(tenantId, new Date(), 5);
 
     return {
       employees: employeesCount,
@@ -596,8 +596,8 @@ export class DashboardService {
       daysAhead: 30,
     });
 
-    // Sri Lanka public holidays (static list for current year)
-    const upcomingHolidays = this.hrCalendar.getUpcomingHolidays(today, 5);
+    // Public holidays from the tenant's Working calendar (single source of truth).
+    const upcomingHolidays = await this.hrCalendar.getUpcomingHolidays(tenantId, today, 5);
 
     return {
       ...profile,

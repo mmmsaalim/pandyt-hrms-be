@@ -13,6 +13,7 @@
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:seed": "prisma db seed",
+    "seed:holidays": "ts-node --transpile-only prisma/seed-holidays.ts",
     "db:push": "prisma db push"
   },
   "prisma": {

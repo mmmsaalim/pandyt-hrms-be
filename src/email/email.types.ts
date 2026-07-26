@@ -91,3 +91,13 @@ export type SendTenantMessageEmailInput = {
   loginUrl: string;
   supportEmail?: string;
 };
+
+export type SendHrLetterEmailInput = {
+  to: string;
+  recipientName: string;
+  companyName: string;
+  subject: string;
+  body: string;
+  senderName?: string;
+  supportEmail?: string;
+};

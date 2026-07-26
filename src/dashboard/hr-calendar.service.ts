@@ -20,27 +20,6 @@ interface BirthdayCandidate {
   user: { firstName: string | null; lastName: string | null } | null;
 }
 
-// Sri Lanka public holidays (static list, recurring by month/day).
-const SRI_LANKA_HOLIDAYS: Array<{ name: string; month: number; day: number }> = [
-  { name: 'Thai Pongal', month: 1, day: 14 },
-  { name: 'Independence Day', month: 2, day: 4 },
-  { name: 'Maha Sivarathri', month: 2, day: 26 },
-  { name: 'Milad un Nabi', month: 3, day: 31 },
-  { name: 'Sinhala & Tamil New Year', month: 4, day: 13 },
-  { name: 'Sinhala & Tamil New Year (Holiday)', month: 4, day: 14 },
-  { name: 'Labour Day', month: 5, day: 1 },
-  { name: 'Vesak Full Moon Poya', month: 5, day: 12 },
-  { name: 'Poson Full Moon Poya', month: 6, day: 11 },
-  { name: 'Esala Full Moon Poya', month: 7, day: 10 },
-  { name: 'Nikini Full Moon Poya', month: 8, day: 9 },
-  { name: 'Binara Full Moon Poya', month: 9, day: 7 },
-  { name: 'Vap Full Moon Poya', month: 10, day: 6 },
-  { name: 'Deepavali', month: 10, day: 20 },
-  { name: 'Ill Full Moon Poya', month: 11, day: 5 },
-  { name: 'Christmas Day', month: 12, day: 25 },
-  { name: 'Unduvap Full Moon Poya', month: 12, day: 4 },
-];
-
 /**
  * Central place for "what's coming up on the calendar" queries (birthdays, public
  * holidays) so dashboard/leave/attendance features share one implementation
@@ -112,21 +91,45 @@ export class HrCalendarService {
     return upcoming.sort((a, b) => a.daysUntil - b.daysUntil);
   }
 
-  getUpcomingHolidays(from: Date = new Date(), take = 5): UpcomingHoliday[] {
+  /**
+   * Upcoming public holidays for a tenant, read from the tenant-maintained
+   * CompanyHoliday calendar (Attendance → Working calendar) — the same source
+   * leave and payroll use, so there is a single source of truth. Recurring
+   * holidays repeat by month/day each year; one-off holidays only show on their
+   * exact future date. Admins update these in the UI, so no yearly code change.
+   */
+  async getUpcomingHolidays(
+    tenantId: number,
+    from: Date = new Date(),
+    take = 5,
+  ): Promise<UpcomingHoliday[]> {
     const referenceDate = new Date(from);
     referenceDate.setHours(0, 0, 0, 0);
     const year = referenceDate.getFullYear();
 
-    const holidays = SRI_LANKA_HOLIDAYS.map((holiday) => {
-      let date = new Date(year, holiday.month - 1, holiday.day);
-      if (date < referenceDate) {
-        date = new Date(year + 1, holiday.month - 1, holiday.day);
+    const rows = await this.prisma.companyHoliday.findMany({
+      where: { tenantId },
+      select: { name: true, date: true, isRecurring: true },
+    });
+
+    const holidays = rows.map((holiday) => {
+      const source = new Date(holiday.date);
+
+      let occurrence: Date;
+      if (holiday.isRecurring) {
+        occurrence = new Date(year, source.getMonth(), source.getDate());
+        if (occurrence < referenceDate) {
+          occurrence = new Date(year + 1, source.getMonth(), source.getDate());
+        }
+      } else {
+        occurrence = new Date(source);
+        occurrence.setHours(0, 0, 0, 0);
       }
 
       return {
         name: holiday.name,
-        date: date.toISOString().split('T')[0],
-        daysUntil: this.daysBetween(referenceDate, date),
+        date: occurrence.toISOString().split('T')[0],
+        daysUntil: this.daysBetween(referenceDate, occurrence),
       };
     });
 

@@ -8,6 +8,7 @@ import {
   SendOverduePaymentReminderEmailInput,
   SendPasswordResetEmailInput,
   SendTenantMessageEmailInput,
+  SendHrLetterEmailInput,
 } from './email.types';
 
 function escapeHtml(value: string): string {
@@ -234,6 +235,32 @@ export function buildTenantMessageEmail(input: SendTenantMessageEmailInput) {
     `Message regarding ${input.companyName}:`,
     input.message,
     `Sign in: ${input.loginUrl}`,
+  ].join('\n\n');
+
+  return { subject, html, text };
+}
+
+export function buildHrLetterEmail(input: SendHrLetterEmailInput) {
+  const subject = input.subject;
+  // The letter body is composed by HR as plain text; preserve its line breaks
+  // and escape it so no user content is interpreted as HTML.
+  const bodyHtml = escapeHtml(input.body).replace(/\n/g, '<br />');
+  const html = baseLayout(
+    subject,
+    `
+      <p style="margin:0 0 16px;">Dear ${escapeHtml(input.recipientName)},</p>
+      <p style="margin:0 0 16px;">Please find below an official letter from <strong>${escapeHtml(input.companyName)}</strong>.</p>
+      <div style="margin:0 0 20px;padding:18px 20px;background:#ffffff;border-radius:10px;border:1px solid #f1d9c6;">${bodyHtml}</div>
+      ${input.senderName ? `<p style="margin:16px 0 0;">Sent by ${escapeHtml(input.senderName)}, ${escapeHtml(input.companyName)}.</p>` : `<p style="margin:16px 0 0;">${escapeHtml(input.companyName)}</p>`}
+      ${input.supportEmail ? `<p style="margin:8px 0 0;">For queries, contact <a href="mailto:${input.supportEmail}">${input.supportEmail}</a>.</p>` : ''}
+    `,
+  );
+
+  const text = [
+    `Dear ${input.recipientName},`,
+    `Official letter from ${input.companyName}:`,
+    input.body,
+    input.senderName ? `Sent by ${input.senderName}, ${input.companyName}` : input.companyName,
   ].join('\n\n');
 
   return { subject, html, text };

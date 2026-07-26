@@ -1,8 +1,17 @@
 import { ForbiddenException, Injectable } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import * as ExcelJS from 'exceljs';
 import { PrismaService } from '../prisma/prisma.service';
 
 type DateRange = { from?: Date; to?: Date };
+type ReportUser = { sub?: number; tenantId?: number; roles?: string[] } | undefined;
+
+/** How a report is scoped to the caller: all-tenant (admin/HR) vs. a team lead's
+ *  own direct reports. `payrollAllowed` guards salary data to admin/HR only. */
+type ReportScope = {
+  employeeWhere: Prisma.EmployeeWhereInput;
+  payrollAllowed: boolean;
+};
 
 @Injectable()
 export class ReportsService {
@@ -15,6 +24,37 @@ export class ReportsService {
     }
 
     return tenantId;
+  }
+
+  /**
+   * Resolve report scope from the caller's role (BRD §4.2 "Export Reports"):
+   *  - COMPANY_ADMIN / HR_MANAGER → whole tenant, payroll included.
+   *  - TEAM_LEAD (granted reports.read) → only their direct reports, no payroll.
+   *  - Any other granted role → their own record only, no payroll.
+   */
+  private async resolveScope(user: ReportUser, tenantId: number): Promise<ReportScope> {
+    const roles = user?.roles ?? [];
+    if (roles.includes('COMPANY_ADMIN') || roles.includes('HR_MANAGER')) {
+      return { employeeWhere: {}, payrollAllowed: true };
+    }
+
+    if (!user?.sub) {
+      throw new ForbiddenException('User context is required for scoped reports.');
+    }
+
+    const self = await this.prisma.employee.findFirst({
+      where: { userId: user.sub, tenantId },
+      select: { id: true },
+    });
+    if (!self) {
+      throw new ForbiddenException('Employee profile not found for scoped reports.');
+    }
+
+    if (roles.includes('TEAM_LEAD')) {
+      return { employeeWhere: { managerId: self.id }, payrollAllowed: false };
+    }
+
+    return { employeeWhere: { id: self.id }, payrollAllowed: false };
   }
 
   /** Parses optional `from`/`to` query strings into an inclusive UTC date range. */
@@ -58,13 +98,16 @@ export class ReportsService {
     return this.workbookToBuffer(workbook);
   }
 
-  async summary(user: { tenantId?: number } | undefined) {
+  async summary(user: ReportUser) {
     const tenantId = this.requireTenant(user);
+    const scope = await this.resolveScope(user, tenantId);
 
     const [employees, leaves, payrollRuns] = await Promise.all([
-      this.prisma.employee.count({ where: { tenantId } }),
-      this.prisma.leaveRequest.count({ where: { employee: { tenantId } } }),
-      this.prisma.payrollRun.count({ where: { tenantId } }),
+      this.prisma.employee.count({ where: { tenantId, ...scope.employeeWhere } }),
+      this.prisma.leaveRequest.count({ where: { employee: { tenantId, ...scope.employeeWhere } } }),
+      scope.payrollAllowed
+        ? this.prisma.payrollRun.count({ where: { tenantId } })
+        : Promise.resolve(0),
     ]);
 
     return { employees, leaves, payrollRuns };
@@ -160,16 +203,18 @@ export class ReportsService {
   // ---------------------------------------------------------------------
 
   async tenantEmployeesReport(
-    user: { tenantId?: number } | undefined,
+    user: ReportUser,
     from?: string,
     to?: string,
   ) {
     const tenantId = this.requireTenant(user);
+    const scope = await this.resolveScope(user, tenantId);
     const range = this.parseDateRange(from, to);
 
     const employees = await this.prisma.employee.findMany({
       where: {
         tenantId,
+        ...scope.employeeWhere,
         deletedAt: null,
         ...(range.from || range.to
           ? {
@@ -202,13 +247,14 @@ export class ReportsService {
     }));
   }
 
-  async tenantLeaveReport(user: { tenantId?: number } | undefined, from?: string, to?: string) {
+  async tenantLeaveReport(user: ReportUser, from?: string, to?: string) {
     const tenantId = this.requireTenant(user);
+    const scope = await this.resolveScope(user, tenantId);
     const range = this.parseDateRange(from, to);
 
     const leaves = await this.prisma.leaveRequest.findMany({
       where: {
-        employee: { tenantId },
+        employee: { tenantId, ...scope.employeeWhere },
         ...(range.from || range.to
           ? {
               startDate: {
@@ -248,16 +294,17 @@ export class ReportsService {
   }
 
   async tenantAttendanceReport(
-    user: { tenantId?: number } | undefined,
+    user: ReportUser,
     from?: string,
     to?: string,
   ) {
     const tenantId = this.requireTenant(user);
+    const scope = await this.resolveScope(user, tenantId);
     const range = this.parseDateRange(from, to);
 
     const records = await this.prisma.attendance.findMany({
       where: {
-        employee: { tenantId },
+        employee: { tenantId, ...scope.employeeWhere },
         ...(range.from || range.to
           ? {
               date: {
@@ -300,8 +347,14 @@ export class ReportsService {
     }));
   }
 
-  async tenantPayrollReport(user: { tenantId?: number } | undefined, from?: string, to?: string) {
+  async tenantPayrollReport(user: ReportUser, from?: string, to?: string) {
     const tenantId = this.requireTenant(user);
+    const scope = await this.resolveScope(user, tenantId);
+    // Salary data stays with admin/HR — a team lead's team-scoped access never
+    // includes payroll (BRD: payroll is Company Admin / HR Manager territory).
+    if (!scope.payrollAllowed) {
+      throw new ForbiddenException('Payroll report is restricted to Company Admin / HR Manager.');
+    }
     const range = this.parseDateRange(from, to);
 
     const runs = await this.prisma.payrollRun.findMany({
@@ -329,7 +382,7 @@ export class ReportsService {
     return runs;
   }
 
-  async tenantEmployeesReportExcel(user: { tenantId?: number } | undefined, from?: string, to?: string) {
+  async tenantEmployeesReportExcel(user: ReportUser, from?: string, to?: string) {
     const rows = await this.tenantEmployeesReport(user, from, to);
     return this.buildWorkbook(
       'Employees',
@@ -346,7 +399,7 @@ export class ReportsService {
     );
   }
 
-  async tenantLeaveReportExcel(user: { tenantId?: number } | undefined, from?: string, to?: string) {
+  async tenantLeaveReportExcel(user: ReportUser, from?: string, to?: string) {
     const rows = await this.tenantLeaveReport(user, from, to);
     return this.buildWorkbook(
       'Leave',
@@ -364,7 +417,7 @@ export class ReportsService {
     );
   }
 
-  async tenantAttendanceReportExcel(user: { tenantId?: number } | undefined, from?: string, to?: string) {
+  async tenantAttendanceReportExcel(user: ReportUser, from?: string, to?: string) {
     const rows = await this.tenantAttendanceReport(user, from, to);
     return this.buildWorkbook(
       'Attendance',
@@ -384,7 +437,7 @@ export class ReportsService {
     );
   }
 
-  async tenantPayrollReportExcel(user: { tenantId?: number } | undefined, from?: string, to?: string) {
+  async tenantPayrollReportExcel(user: ReportUser, from?: string, to?: string) {
     const rows = await this.tenantPayrollReport(user, from, to);
     return this.buildWorkbook(
       'Payroll',
